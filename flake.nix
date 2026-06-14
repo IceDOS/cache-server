@@ -21,6 +21,11 @@
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
 
+      dockerStackPkg = pkgs.writeShellScriptBin "docker" ''
+        env NIX_SERVE_BIN="${pkgs.nix-serve-ng}/bin/nix-serve" \
+          docker compose -f "${self}/stack/compose.yml" "$@"
+      '';
+
       icedosApp =
         (icedos.lib.mkIceDOS {
           configRoot = self;
@@ -40,6 +45,10 @@
         };
 
         icedos = icedosApp;
+      };
+
+      packages.${system} = {
+        stack.docker = dockerStackPkg;
       };
     };
 }
