@@ -1,5 +1,6 @@
 [[icedos.repositories]]
 url = "github:icedos/apps"
+fetchDependencies = false
 modules = [
   "bb-launcher",
   "eden",
