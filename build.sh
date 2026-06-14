@@ -20,7 +20,9 @@ do_handle_der() {
 
   nix copy --to "ssh-ng://cache-server" "$der"
 
-  ssh cache-server bash '$HOME/register-gc-root.sh' "$der"
+  gc_script="$(nix-store --add ./utils/register-gc-root.sh)"
+  nix copy --to "ssh-ng://cache-server" "$gc_script"
+  ssh cache-server bash "$gc_script" "$der"
 }
 
 do_sign() {
