@@ -40,7 +40,17 @@ icedos_out="$PWD/build/icedos"
 mkdir -p "$icedos_out"
 
 [ -d "$PWD/.git" ] && mv "$PWD/.git" "$PWD/.git.bak"
+
+# Build base NixOS without substituter, as it's faster locally
+cp config/config.toml.base config.toml
+nix run .#icedos -- --build --nh-args --no-nom
+rm config.toml
+
+# Then switch to the target config
+cp config/config.toml.final config.toml
+
 TMPDIR="$icedos_out" nix run .#icedos -- --build \
+  --nh-args --no-nom \
   --build-args \
   --extra-substituters "$NIX_SUBSTITUTER" \
   --extra-trusted-public-keys "$(cat nix-public.pem)"

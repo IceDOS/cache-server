@@ -1,0 +1,5 @@
+[icedos]
+repositories = []
+
+[icedos.system]
+version = "26.05"
