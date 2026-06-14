@@ -38,7 +38,7 @@ cp config/config.toml.final config.toml
 TMPDIR="$icedos_out" nix run .#icedos -- --build \
   --nh-args --no-nom \
   --build-args \
-  --extra-substituters "$NIX_SUBSTITUTER" \
+  --extra-substituters "ssh-ng://cache-server" \
   --extra-trusted-public-keys "$(cat nix-public.pem)"
 [ -d "$PWD/.git.bak" ] && mv "$PWD/.git.bak" "$PWD/.git"
 
