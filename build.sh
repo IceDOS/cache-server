@@ -12,14 +12,9 @@ mkdir -p build
 
 do_handle_der() {
   der="$1"
-
   nix store sign --key-file nix-private.pem --recursive "$der"
-
   nix copy --to "ssh-ng://cache-server" "$der"
-
-  gc_script="$(nix-store --add ./utils/register-gc-root.sh)"
-  nix copy --to "ssh-ng://cache-server" "$gc_script"
-  ssh cache-server bash "$gc_script" "$der"
+  ssh cache-server bash "/opt/cache-server/utils/register-gc-root.sh" "$der"
 }
 
 icedos_out="$PWD/build/icedos"
