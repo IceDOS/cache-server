@@ -1,0 +1,8 @@
+[[icedos.repositories]]
+url = "github:icedos/apps"
+modules = [
+  "harmony-music"
+]
+
+[icedos.system]
+version = "26.05"
