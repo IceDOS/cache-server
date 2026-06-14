@@ -1,0 +1,3 @@
+icedos.mirrors.knp.one {
+    reverse_proxy nar-cache:8080
+}
