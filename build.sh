@@ -38,7 +38,10 @@ icedos_out="$PWD/build/icedos"
 mkdir -p "$icedos_out"
 
 [ -d "$PWD/.git" ] && mv "$PWD/.git" "$PWD/.git.bak"
-TMPDIR="$icedos_out" nix run .#icedos -- --build
+TMPDIR="$icedos_out" nix run .#icedos -- --build \
+  --build-args \
+  --extra-substituters "$NIX_SUBSTITUTER" \
+  --extra-trusted-public-keys "$(cat nix-public.pem)"
 [ -d "$PWD/.git.bak" ] && mv "$PWD/.git.bak" "$PWD/.git"
 
 icedos_result="$icedos_out/$(ls "$icedos_out")/result"
