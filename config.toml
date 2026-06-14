@@ -1,7 +1,15 @@
 [[icedos.repositories]]
 url = "github:icedos/apps"
 modules = [
-  "harmony-music"
+  "bb-launcher",
+  "eden",
+  "low-latency-vulkan-layer",
+  "nx-optimizer",
+  "prefixer",
+  "reigntweak",
+  "sekirofpsunlock",
+  "spotube",
+  "unshade",
 ]
 
 [icedos.system]
