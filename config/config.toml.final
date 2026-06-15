@@ -2,6 +2,7 @@
 url = "github:icedos/apps"
 fetchDependencies = false
 modules = [
+  "ambiled",
   "bb-launcher",
   "eden",
   "low-latency-vulkan-layer",
