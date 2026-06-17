@@ -11,8 +11,35 @@ modules = [
   "reigntweak",
   "sekirofpsunlock",
   "spotube",
+  "sunshine",
   "unshade",
+  "zenergy",
 ]
+
+[[icedos.repositories]]
+url = "github:icedos/hardware"
+fetchDependencies = false
+modules = [
+  "cachyos-kernel",
+  "kernel",
+  "xpadneo",
+]
+
+[[icedos.repositories]]
+url = "github:icedos/kde"
+modules = [
+  "dynamic-workspaces",
+  "krohnkite",
+  "layout-osd",
+  "move-to-desktop-follow",
+]
+
+[icedos.hardware.kernel]
+variant = "latest-lto-x86_64-v3"
 
 [icedos.system]
 version = "26.05"
+
+[[icedos.system.overlays.fromChannel]]
+url = "github:nixos/nixpkgs/nixos-unstable-small"
+packages = ["kdePackages", "sunshine"]

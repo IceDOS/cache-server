@@ -12,6 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Reclaim /mnt for a large /nix store (runner / is only ~17 GB). MUST run before Nix is
+      # installed (the action aborts if /nix already exists). nix-permission-edict gives the runner
+      # user ownership of /nix so the single-user install + cache-nix-action restore can write into it.
+      - uses: wimpysworld/nothing-but-nix@v10
+        with:
+          nix-permission-edict: true
       # Single-user install: runner owns /nix so cache-nix-action can restore into it.
       # (Multi-user install-nix-action leaves /nix root-owned -> restore "Permission denied".)
       - uses: nixbuild/nix-quick-install-action@v30
