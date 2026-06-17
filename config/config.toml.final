@@ -22,6 +22,8 @@ fetchDependencies = false
 modules = [
   "cachyos-kernel",
   "kernel",
+  "nvidia",
+  "radeon",
   "xpadneo",
 ]
 
@@ -37,7 +39,18 @@ modules = [
 [icedos.hardware.kernel]
 variant = "latest-lto-x86_64-v3"
 
+[icedos.hardware.graphics.radeon]
+rocm = true
+
+[icedos.hardware.graphics.nvidia]
+cuda = true
+
 [icedos.system]
+packages = [
+  "kdePackages.plasma-bigscreen",
+  "steam",
+  "stremio-linux-shell",
+]
 version = "26.05"
 
 [[icedos.system.overlays.fromChannel]]
