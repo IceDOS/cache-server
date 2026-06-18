@@ -1,0 +1,39 @@
+# atticd (Attic Nix binary cache) server configuration.
+#
+# The JWT HS256 signing secret is NOT stored here — it is supplied out-of-band via the
+# ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64 environment variable (see compose.yml).
+# Generate it once with:  openssl rand 64 | base64 -w0
+#
+# NOTE: Attic's config schema is version-sensitive (e.g. recent versions moved the JWT
+# secret to a [jwt.signing] block). If atticd fails to start, validate this file against
+# the deployed atticd version. Supplying the secret via the env var above sidesteps the
+# top-level-vs-[jwt.signing] change.
+
+listen = "[::]:8080"
+
+[database]
+url = "sqlite:///data/server.db?mode=rwc"
+
+[storage]
+type = "local"
+path = "/data/storage"
+
+# Content-addressed chunking → global deduplication across every pushed path.
+[chunking]
+nar-size-threshold = 65536
+min-size = 16384
+avg-size = 65536
+max-size = 262144
+
+[compression]
+type = "zstd"
+
+# GC runs every `interval`. `default-retention-period` is the server-wide default
+# applied to every cache (override per-cache with `attic cache configure icedos
+# --retention-period <dur>`). LRU/access-based: an object is removed once it has not
+# been ACCESSED (pulled, or re-pushed by CI) for the retention period — actively-used
+# paths stay, only stale ones (old kernel versions, removed configs) age out.
+# Zero/unset = time-based GC DISABLED, so this key is required to clean anything.
+[garbage-collection]
+interval = "12 hours"
+default-retention-period = "30d"

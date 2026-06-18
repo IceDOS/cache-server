@@ -22,7 +22,7 @@
       pkgs = nixpkgs.legacyPackages.${system};
 
       dockerStackPkg = pkgs.writeShellScriptBin "docker" ''
-        env NIX_SERVE_BIN="${pkgs.nix-serve-ng}/bin/nix-serve" \
+        env ATTICD_BIN="${pkgs.attic-server}/bin/atticd" \
           docker compose -f "${self}/stack/compose.yml" "$@"
       '';
 

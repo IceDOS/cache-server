@@ -4,8 +4,10 @@ on:
   workflow_dispatch:
 
 concurrency:
+  # Queue auto-triggered builds instead of cancelling — a cancel would kill an
+  # in-progress (expensive) kernel compile and leave the cache unpopulated.
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -40,21 +42,11 @@ jobs:
           purge-prefixes: nix-${{ runner.os }}-
           purge-created: 0
           purge-primary-key: never
-      - uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_KEY }}
-      - name: Configure SSH
+      - name: Attic login
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_HOST_KEY }}" >~/.ssh/known_hosts
-          touch ~/.ssh/config
-          echo "Host cache-server" >>~/.ssh/config
-          echo "  HostName ${{ secrets.SSH_HOST }}" >>~/.ssh/config
-          echo "  User ${{ secrets.SSH_USER }}" >>~/.ssh/config
-      - name: Extract Nix signing key
-        run: 'echo "$NIX_SIGNING_KEY" > nix-private.pem'
-        shell: bash
+          nix profile install nixpkgs#attic-client
+          attic login icedos https://icedos.mirrors.knp.one "$ATTIC_TOKEN"
         env:
-          NIX_SIGNING_KEY: ${{ secrets.NIX_SIGNING_KEY }}
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
       - name: Run Nix Build
         run: nix run .#build
