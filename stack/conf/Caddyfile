@@ -1,3 +1,14 @@
 icedos.mirrors.knp.one {
-    reverse_proxy nar-cache:8080
+    @upload {
+        method PUT
+        path /_api/v1/upload-path
+    }
+
+    handle @upload {
+        reverse_proxy app:8080
+    }
+
+    handle {
+        reverse_proxy nar-cache:8080
+    }
 }
