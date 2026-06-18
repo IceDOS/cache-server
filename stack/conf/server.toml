@@ -25,8 +25,9 @@ min-size = 16384
 avg-size = 65536
 max-size = 262144
 
+# Disable compression to reduce CPU overhead on server
 [compression]
-type = "zstd"
+type = "none"
 
 # GC runs every `interval`. `default-retention-period` is the server-wide default
 # applied to every cache (override per-cache with `attic cache configure icedos
