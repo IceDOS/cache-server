@@ -2,24 +2,10 @@
 url = "github:icedos/apps"
 fetchDependencies = false
 modules = [
-  "ambiled",
-  "bb-launcher",
-  "eden",
-  "low-latency-vulkan-layer",
-  "nx-optimizer",
-  "prefixer",
-  "reigntweak",
-  "sekirofpsunlock",
-  "spotube",
   "sunshine",
-  "unshade",
 ]
 
 [icedos.system]
-packages = [
-  "steam",
-  "stremio-linux-shell",
-]
 version = "26.05"
 
 [[icedos.system.overlays.fromChannel]]

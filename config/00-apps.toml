@@ -1,0 +1,22 @@
+[[icedos.repositories]]
+url = "github:icedos/apps"
+fetchDependencies = false
+modules = [
+  "ambiled",
+  "bb-launcher",
+  "eden",
+  "low-latency-vulkan-layer",
+  "nx-optimizer",
+  "prefixer",
+  "reigntweak",
+  "sekirofpsunlock",
+  "spotube",
+  "steam",
+  "unshade",
+]
+
+[icedos.system]
+packages = [
+  "stremio-linux-shell",
+]
+version = "26.05"
