@@ -53,13 +53,13 @@ missing `/data/storage`, create it inside the volume.
 # Admin token — atticadm signs with the same secret (already exported):
 ATTICADM="$(nix build nixpkgs#attic-server --no-link --print-out-paths)/bin/atticadm"
 ROOT="$("$ATTICADM" make-token --sub admin --validity '100y' \
-        --pull '*' --push '*' --create-cache '*' --configure-cache '*')"
+        --pull '*' --push '*' --create-cache '*' --configure-cache '*' --configure-cache-retention '*')"
 
 nix shell nixpkgs#attic-client
 attic login central https://icedos.mirrors.knp.one "$ROOT"
 attic cache create icedos
 attic cache configure icedos --public          # unauthenticated pull for end users
-attic cache config icedos                       # copy the printed  icedos:<base64>  public key
+attic cache info icedos                        # copy the printed  icedos:<base64>  public key
 ```
 
 > Confirm exact flags with `atticadm make-token --help` / `attic cache configure --help` — the flag
