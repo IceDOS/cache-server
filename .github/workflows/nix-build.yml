@@ -45,8 +45,11 @@ jobs:
       - name: Attic login
         run: |
           nix profile install nixpkgs#attic-client
-          attic login icedos https://icedos.mirrors.knp.one "$ATTIC_TOKEN"
+          attic login icedos "$ICEDOS_SUBSTITUTER" "$ATTIC_TOKEN"
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
       - name: Run Nix Build
         run: nix run .#build
+        env:
+          ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}

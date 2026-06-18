@@ -43,7 +43,7 @@ for cfg in config/*.toml; do
     TMPDIR="$icedos_out" nix run .#icedos -- --build \
       --nh-args --no-nom \
       --build-args \
-      --extra-substituters "https://icedos.mirrors.knp.one/icedos?priority=100" \
+      --extra-substituters "$ICEDOS_SUBSTITUTER/icedos?priority=100" \
       --extra-trusted-public-keys "$(cat nix-public.pem)" \
       --extra-substituters "https://attic.xuyh0120.win/lantian?priority=90" \
       --extra-trusted-public-keys "lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc="
