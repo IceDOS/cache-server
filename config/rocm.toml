@@ -1,0 +1,19 @@
+[[icedos.repositories]]
+url = "github:icedos/hardware"
+fetchDependencies = false
+modules = ["radeon"]
+
+[icedos.hardware.graphics.radeon]
+rocm = true
+
+# Full ROCm toolkit so the rocmSupport-variant builds (absent from cache.nixos.org)
+# get compiled once here and cached, instead of every user compiling them locally.
+[icedos.system]
+packages = [
+  "rocmPackages.clr",
+  "rocmPackages.rocminfo",
+  "rocmPackages.rocblas",
+  "rocmPackages.hipblas",
+  "rocmPackages.rocm-smi",
+]
+version = "26.05"
