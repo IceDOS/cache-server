@@ -1,0 +1,22 @@
+[[icedos.repositories]]
+url = "github:icedos/apps"
+fetchDependencies = false
+modules = ["zenergy"]
+
+[[icedos.repositories]]
+url = "github:icedos/hardware"
+fetchDependencies = false
+modules = [
+  "cachyos-kernel",
+  "kernel",
+  "xpadneo",
+]
+
+[icedos.hardware.kernel]
+variant = "latest-lto-x86_64-v3"
+
+[icedos.hardware.kernel.cachyos]
+applyWithoutSubstituter = true
+
+[icedos.system]
+version = "26.05"

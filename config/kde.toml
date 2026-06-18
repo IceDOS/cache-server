@@ -1,0 +1,18 @@
+[[icedos.repositories]]
+url = "github:icedos/kde"
+modules = [
+  "dynamic-workspaces",
+  "krohnkite",
+  "layout-osd",
+  "move-to-desktop-follow",
+]
+
+[icedos.system]
+packages = [
+  "kdePackages.plasma-bigscreen",
+]
+version = "26.05"
+
+[[icedos.system.overlays.fromChannel]]
+url = "github:nixos/nixpkgs/nixos-unstable-small"
+packages = ["kdePackages"]

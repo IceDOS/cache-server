@@ -1,0 +1,15 @@
+[[icedos.repositories]]
+url = "github:icedos/hardware"
+fetchDependencies = false
+modules = ["nvidia"]
+
+[icedos.hardware.graphics.nvidia]
+cuda = true
+
+# Full CUDA toolkit so the cudaSupport-variant build gets compiled once here and
+# cached, instead of every user compiling it locally.
+[icedos.system]
+packages = [
+  "cudaPackages.cudatoolkit",
+]
+version = "26.05"

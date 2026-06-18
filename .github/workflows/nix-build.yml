@@ -31,7 +31,7 @@ jobs:
             cores = 0
       - uses: nix-community/cache-nix-action@v6
         with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'config/config.toml.final') }}
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'config/config.toml*') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
           # Cap the saved store below GitHub's 10GB/repo cache ceiling
           gc-max-store-size: 8000000000
