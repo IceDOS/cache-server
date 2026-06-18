@@ -7,7 +7,7 @@ services:
       # the served cache — Attic keeps its NARs/chunks + db in the attic_data volume.
       - "/nix:/nix:ro"
       - "./conf/server.toml:/etc/attic/server.toml:ro"
-      - "attic_data:/data"
+      - "/nix/attic:/data"
     environment:
       # JWT signing secret — never committed. Generate once with
       # `openssl rand 64 | base64 -w0` and provide via the host env / .env file.
@@ -39,5 +39,4 @@ services:
       - "caddy_data:/data"
 
 volumes:
-  attic_data:
   caddy_data:
