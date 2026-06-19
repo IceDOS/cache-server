@@ -3,17 +3,26 @@ services:
     image: busybox:uclibc
     restart: unless-stopped
     volumes:
-      - "/nix:/nix"
+      # /nix only provides atticd's own runtime closure (the injected binary), NOT
+      # the served cache — Attic keeps its NARs/chunks + db in the attic_data volume.
+      - "/nix:/nix:ro"
+      - "./conf/server.toml:/etc/attic/server.toml:ro"
+      - "/nix/attic:/data"
+    environment:
+      # JWT signing secret — never committed. Generate once with
+      # `openssl rand 64 | base64 -w0` and provide via the host env / .env file.
+      ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64: "${ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64}"
     command: [
-      "${NIX_SERVE_BIN}",
-      "--host", "0.0.0.0",
-      "--port", "8080"
+      "${ATTICD_BIN}",
+      "-f", "/etc/attic/server.toml",
+      "--mode", "monolithic"
     ]
 
   nar-cache:
     image: nginx:mainline-alpine
     restart: unless-stopped
     volumes:
+      # Cache lives on disk at /nix/nar-cache (the /nix volume has the space).
       - "/nix:/nix"
       - ./conf/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./conf/nar-cache.conf:/etc/nginx/conf.d/nar-cache.conf:ro

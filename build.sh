@@ -2,19 +2,14 @@
 
 set -e
 
-[ -f nix-private.pem ] || {
-  echo "Signing key not found" >/dev/stderr
-  exit 1
-}
-
 [ -d build ] && rm -r build
 mkdir -p build
 
 do_handle_der() {
   der="$1"
-  nix store sign --key-file nix-private.pem --recursive "$der"
-  nix copy --to "ssh-ng://cache-server" "$der"
-  ssh cache-server bash "/opt/cache-server/utils/register-gc-root.sh" "$der"
+  # Push only icedos-custom paths: attic skips paths already on cache.nixos.org and
+  # globally dedups. Server + auth come from `attic login` (see the CI workflow).
+  attic push icedos "$der"
 }
 
 icedos_out="$PWD/build/icedos"
@@ -48,7 +43,7 @@ for cfg in config/*.toml; do
     TMPDIR="$icedos_out" nix run .#icedos -- --build \
       --nh-args --no-nom \
       --build-args \
-      --extra-substituters "ssh-ng://cache-server?priority=100" \
+      --extra-substituters "$ICEDOS_SUBSTITUTER/icedos?priority=100" \
       --extra-trusted-public-keys "$(cat nix-public.pem)" \
       --extra-substituters "https://attic.xuyh0120.win/lantian?priority=90" \
       --extra-trusted-public-keys "lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc="

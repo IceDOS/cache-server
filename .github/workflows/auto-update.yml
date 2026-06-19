@@ -1,0 +1,56 @@
+name: Auto Update flake.lock
+
+on:
+  schedule:
+    # Every 3 hours (UTC). GitHub may delay or skip scheduled runs under load,
+    # and they only run on the default branch.
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+
+# contents:write to push the lock bump; actions:write to dispatch the build.
+permissions:
+  contents: write
+  actions: write
+
+# Never run two updaters at once; let an in-flight one finish.
+concurrency:
+  group: auto-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@v30
+        with:
+          nix_conf: |
+            experimental-features = nix-command flakes
+
+      - name: Update nixpkgs and detect change
+        id: update
+        run: |
+          old=$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)
+          nix flake update nixpkgs
+          new=$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)
+          echo "nixpkgs: $old -> $new"
+          if [ "$old" = "$new" ]; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "short=${new:0:12}" >>"$GITHUB_OUTPUT"
+          fi
+
+      # GITHUB_TOKEN pushes do NOT cascade-trigger other workflows, so dispatch the
+      # build explicitly (an API dispatch is allowed and runs on the new commit).
+      - name: Commit, push and trigger build
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.lock
+          git commit -m "chore(flake): bump nixpkgs to ${{ steps.update.outputs.short }}"
+          git push
+          gh workflow run nix-build.yml --ref "$GITHUB_REF_NAME"
