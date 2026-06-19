@@ -2,9 +2,9 @@ name: Auto Update flake.lock
 
 on:
   schedule:
-    # Every 3 hours (UTC). GitHub may delay or skip scheduled runs under load,
+    # Every 30 minutes (UTC). GitHub may delay or skip scheduled runs under load,
     # and they only run on the default branch.
-    - cron: "0 */3 * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 # contents:write to push the lock bump; actions:write to dispatch the build.
