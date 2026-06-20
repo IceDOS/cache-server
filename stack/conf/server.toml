@@ -13,17 +13,21 @@ listen = "[::]:8080"
 
 [database]
 url = "sqlite:///data/server.db?mode=rwc"
+# Disable heartbeat queries — saves a query/minute on a single-core box.
+heartbeat = false
 
 [storage]
 type = "local"
 path = "/data/storage"
 
 # Content-addressed chunking → global deduplication across every pushed path.
+# Larger chunks = fewer reassembly operations per NAR request (less CPU on single-core).
+# Trade-off: slightly reduced dedup ratio, but this box is CPU-bound not storage-bound.
 [chunking]
-nar-size-threshold = 65536
-min-size = 16384
-avg-size = 65536
-max-size = 262144
+nar-size-threshold = 131072
+min-size = 32768
+avg-size = 131072
+max-size = 524288
 
 # Disable compression to reduce CPU overhead on server
 [compression]
