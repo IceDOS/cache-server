@@ -31,7 +31,7 @@ jobs:
         id: update
         run: |
           old=$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)
-          nix flake update nixpkgs
+          nix flake update
           new=$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)
           echo "nixpkgs: $old -> $new"
           if [ "$old" = "$new" ]; then
