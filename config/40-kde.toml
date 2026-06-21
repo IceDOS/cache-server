@@ -5,6 +5,9 @@ modules = [
   "krohnkite",
   "layout-osd",
   "move-to-desktop-follow",
+  "no-titlebar",
+  "plasmazones",
+  "window-borders",
 ]
 
 [icedos.system]
