@@ -9,16 +9,20 @@
 # the deployed atticd version. Supplying the secret via the env var above sidesteps the
 # top-level-vs-[jwt.signing] change.
 
-listen = "[::]:8080"
+# Localhost only — Caddy (TLS edge) and nginx (cache) are the public faces; atticd
+# is never exposed directly.
+listen = "127.0.0.1:8080"
 
 [database]
-url = "sqlite:///data/server.db?mode=rwc"
+# Runs directly on the host now (no container), so data lives under the host's
+# /nix/attic (the path that already holds the cache from the old stack).
+url = "sqlite:///nix/attic/server.db?mode=rwc"
 # Disable heartbeat queries — saves a query/minute on a single-core box.
 heartbeat = false
 
 [storage]
 type = "local"
-path = "/data/storage"
+path = "/nix/attic/storage"
 
 # Content-addressed chunking → global deduplication across every pushed path.
 # Larger chunks = fewer reassembly operations per NAR request (less CPU on single-core).

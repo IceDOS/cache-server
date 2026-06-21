@@ -1,20 +1,22 @@
+# Caddy = the TLS edge with fully automatic HTTPS (issue + renew, zero
+# intervention). Uploads go straight to atticd (streamed, never cached); all
+# other traffic goes through the nginx disk cache. Both upstreams are localhost
+# (atticd + nginx run as sibling processes under the supervisor).
 {
-    # Reduce Caddy's memory footprint: disable admin API and limit TLS session cache.
-    admin off
-    grace_period 10s
+	admin off
+	grace_period 10s
 }
 
 icedos.mirrors.knp.one {
-    @upload {
-        method PUT
-        path /_api/v1/upload-path
-    }
+	@upload {
+		method PUT
+		path /_api/v1/upload-path
+	}
+	handle @upload {
+		reverse_proxy 127.0.0.1:8080
+	}
 
-    handle @upload {
-        reverse_proxy app:8080
-    }
-
-    handle {
-        reverse_proxy unix//run/nginx/nginx.sock
-    }
+	handle {
+		reverse_proxy 127.0.0.1:8081
+	}
 }
