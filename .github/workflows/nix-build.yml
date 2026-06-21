@@ -24,6 +24,11 @@ jobs:
         with:
           hatchet-protocol: 'rampage'
           nix-permission-edict: true
+          # Keep enough free on / for the post-run cache-nix-action tarball.
+          # rampage otherwise reclaims / down to the 2 GB default, too small for
+          # cache.tzst (~half of gc-max-store-size, ~4 GB) -> "No space left on
+          # device". The build still has ~100 GB across / + /mnt.
+          root-safe-haven: '10240'
       # Single-user install: runner owns /nix so cache-nix-action can restore into it.
       # (Multi-user install-nix-action leaves /nix root-owned -> restore "Permission denied".)
       - uses: nixbuild/nix-quick-install-action@v30
