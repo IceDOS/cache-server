@@ -11,4 +11,12 @@
   # into the closure so it is actually built, signed and uploaded.
   boot.kernel.enable = lib.mkForce true;
   system.extraDependencies = [ config.boot.kernelPackages.kernel ];
+
+  # isContainer (container-config.nix) also sets services.udev.enable = false. A
+  # module that enables udev then hard-conflicts: the sunshine-headless forged EDID
+  # sets hardware.display.edid.packages, and services/hardware/display.nix responds
+  # with services.udev.enable = true. Both are normal priority, so the eval aborts.
+  # Force udev on (as on a real, non-container system) so the EDID firmware + udev
+  # rules land in the closure and the conflict resolves.
+  services.udev.enable = lib.mkForce true;
 }

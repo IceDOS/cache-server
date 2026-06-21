@@ -12,11 +12,20 @@ modules = [
   "sekirofpsunlock",
   "spotube",
   "steam",
+  "steam-sunshine-headless-session",
+  "sunshine",
   "unshade",
 ]
+
+[icedos.applications.steam.headlessSession]
+output = "NULL-0"
 
 [icedos.system]
 packages = [
   "stremio-linux-shell",
 ]
 version = "26.05"
+
+[[icedos.system.overlays.fromChannel]]
+url = "github:nixos/nixpkgs/nixos-unstable-small"
+packages = ["sunshine"]
