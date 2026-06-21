@@ -32,6 +32,16 @@ build_and_push() {
     # never race on config.toml or the generated flake state.
     rsync -a --exclude=build --exclude=.git "$root/" "$work/"
     cp "$cfg" "$work/config.toml"
+
+    # Reuse the shared inputs (nixpkgs, icedos-core, home-manager, …) already
+    # resolved by the base build: seed its lock so this build only resolves its
+    # OWN repos. nix populates the missing repo inputs on top (it locks them
+    # in-memory for the build; --no-update-lock-file doesn't block additions).
+    if [ -n "${BASE_LOCK:-}" ] && [ -f "${BASE_LOCK:-}" ] && [ "$cfg" != "$base" ]; then
+      mkdir -p "$work/build/.state"
+      cp "$BASE_LOCK" "$work/build/.state/flake.lock"
+    fi
+
     mkdir -p "$out"
 
     echo "building $cfg..."
@@ -68,11 +78,16 @@ build_and_push() {
 # own deltas instead of racing to (re)build the common base on a cold store —
 # measurably faster.
 base="config/00-base.toml"
+BASE_LOCK=""
 if [ -f "$base" ]; then
   echo "=== warming shared base: $base ==="
   build_and_push "$base"
-  [ "$(cat "$root/build/status/00-base" 2>/dev/null)" = "ok" ] \
-    || echo "WARNING: base warm-up failed; parallel builds will each build their own base" >&2
+  if [ "$(cat "$root/build/status/00-base" 2>/dev/null)" = "ok" ]; then
+    # Hand the base's resolved input lock to every later build (see build_and_push).
+    BASE_LOCK="$workbase/00-base/build/.state/flake.lock"
+  else
+    echo "WARNING: base warm-up failed; parallel builds will each resolve their own inputs" >&2
+  fi
 fi
 
 # Fan out the remaining configs in parallel against the now-warm store, throttled.
