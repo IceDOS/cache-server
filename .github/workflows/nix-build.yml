@@ -32,7 +32,7 @@ jobs:
             keep-outputs = true
             max-jobs = auto
             cores = 0
-      - uses: nix-community/cache-nix-action@v6
+      - uses: nix-community/cache-nix-action@v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'config/*.toml') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
