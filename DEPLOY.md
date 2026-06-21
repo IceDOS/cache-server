@@ -8,117 +8,113 @@ paths from this cache.
 
 ## Stack
 
-`stack/compose.yml` runs three containers (chain: `web → nar-cache → app`):
+The whole stack is a **foreground supervisor** (`stack/supervisor.sh`) running three nix binaries —
+no Docker, no containers, no daemon:
 
-- **app** — `atticd` (binary cache server). SQLite + local storage in the `attic_data` volume;
-  config in `stack/conf/server.toml`. The JWT signing secret is supplied via the
-  `ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64` environment variable (never committed).
-- **nar-cache** — nginx disk cache (`/nix/nar-cache`, 16 GB) in front of atticd, so repeat pulls of
-  a hot path are served from disk instead of re-reassembling/decompressing the NAR each time
-  (offloads the single core; `proxy_cache_lock` coalesces concurrent misses).
-- **web** — Caddy, TLS-terminating reverse proxy for `icedos.mirrors.knp.one` → `nar-cache:8080`.
+- **atticd** — the binary cache (localhost `127.0.0.1:8080`). SQLite + storage under `/nix/attic`.
+- **nginx** — disk cache (`/nix/nar-cache`, 64 GB) on `127.0.0.1:8081`, shielding atticd's single
+  core from repeat NAR reassembly.
+- **caddy** — the public TLS edge (`:80`/`:443`) with **fully automatic HTTPS** (issue + renew,
+  zero intervention). Uploads stream straight to atticd; everything else goes through the nginx cache.
 
-The `atticd` binary is injected by the flake wrapper (`packages.stack.docker`), so run compose via
-`nix run .#stack.docker -- <args>`.
+`nix run .#stack` brings it up in the foreground; any signal, or any child dying, drops the **whole**
+stack atomically. It does not daemonise — wrap it for keep-alive (below).
 
-## First-time deployment (server: `icedos.mirrors.knp.one`)
+Host state: `/nix/attic` (atticd), `/nix/nar-cache` (nginx), `/var/lib/icedos-caddy` (Caddy's ACME
+account + certs — **persist this** so Caddy never re-issues on restart).
 
-### 1. Pull + generate the JWT secret
+## Keep-alive (Debian 13 / systemd)
 
 ```bash
 cd /path/to/cache-server && git pull
 
-# Generate once and store root-only:
-openssl rand 64 | base64 -w0 | sudo tee /etc/icedos-attic-secret >/dev/null
-export ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64="$(sudo cat /etc/icedos-attic-secret)"
+# 1. JWT secret as a KEY=VALUE env file (reuse the existing secret value)
+echo "ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64=$(sudo cat /etc/icedos-attic-secret)" \
+  | sudo tee /etc/icedos-attic-secret-env >/dev/null
+
+# 2. stable symlink to the current built stack (rebuild on updates)
+sudo nix build .#supervisor --out-link /var/lib/icedos-stack   # or path:.#supervisor before committing
+
+# 3. systemd wrapper — keeps the foreground supervisor alive + restarts it
+sudo tee /etc/systemd/system/icedos-stack.service >/dev/null <<'EOF'
+[Unit]
+Description=IceDOS cache stack (atticd + nginx + caddy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/icedos-attic-secret-env
+ExecStart=/var/lib/icedos-stack/bin/icedos-cache
+Restart=always
+RestartSec=5
+# optional hardening:
+# ProtectSystem=strict
+# ReadWritePaths=/nix/attic /nix/nar-cache /var/lib/icedos-caddy /run
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now icedos-stack.service
 ```
 
-`docker compose` substitutes the secret into the container at `up` time and keeps it across
-restarts/reboots, so it only needs to be exported when you run `up`.
+`systemctl stop` → SIGTERM → the supervisor drops the stack. The unit runs the supervisor in the
+foreground (no detach); systemd just keeps it alive across reboots/crashes.
 
-### 2. Bring up the stack
+> On Alpine/OpenRC instead of systemd, run the same `/var/lib/icedos-stack/bin/icedos-cache` under
+> `supervise-daemon` with the secret exported — the supervisor itself is init-agnostic.
+
+## Migrating from the old Docker stack
 
 ```bash
-nix run .#stack.docker -- down                       # stop the previous stack (if any)
-nix run .#stack.docker -- up -d --remove-orphans     # --remove-orphans drops the retired nar-cache
-nix run .#stack.docker -- logs -f app                # confirm atticd started, then Ctrl-C
+docker compose -f stack/compose.yml down     # the old compose lives in git history
+sudo systemctl disable --now docker          # optional: reclaim dockerd/containerd/shim/proxy RAM
 ```
 
-The `caddy_data` volume (TLS certs) is reused; `attic_data` is created fresh. If atticd reports a
-missing `/data/storage`, create it inside the volume.
+The new atticd reads the **same `/nix/attic`**, so the cache contents + public key carry over —
+**no re-bootstrap**. nginx reuses `/nix/nar-cache` too. With `:80`/`:443` now free, Caddy issues a
+fresh cert on first start.
 
-### 3. Bootstrap the cache
+## Updating the stack
 
 ```bash
-# Admin token — atticadm signs with the same secret (already exported):
-ATTICADM="$(nix build nixpkgs#attic-server --no-link --print-out-paths)/bin/atticadm"
-ROOT="$("$ATTICADM" make-token --sub admin --validity '100y' \
-        --pull '*' --push '*' --create-cache '*' --configure-cache '*' --configure-cache-retention '*')"
-
-nix shell nixpkgs#attic-client
-attic login central https://icedos.mirrors.knp.one "$ROOT"
-attic cache create icedos
-attic cache configure icedos --public          # unauthenticated pull for end users
-attic cache info icedos                        # copy the printed  icedos:<base64>  public key
+cd /path/to/cache-server && git pull
+sudo nix build .#supervisor --out-link /var/lib/icedos-stack
+sudo systemctl restart icedos-stack.service
 ```
 
-> Confirm exact flags with `atticadm make-token --help` / `attic cache configure --help` — the flag
-> set changes between attic versions.
+Config/binary store paths are baked into the supervisor at build time, so an update = rebuild the
+symlink + restart.
 
-### 4. Publish the cache public key
+## TLS — zero intervention
 
-```bash
-echo 'icedos:<paste-the-public-key>' > nix-public.pem   # replaces the old nix-serve key
-git add nix-public.pem && git commit -m 'attic: cache public key' && git push
-```
+Caddy issues and renews the `icedos.mirrors.knp.one` certificate automatically (ACME), persisting
+state in `/var/lib/icedos-caddy`. Nothing to schedule, no timer, no cron. Set the ACME account email
+in `stack/conf/Caddyfile` (currently `support@dtek.gr`). Requirements: ports 80 + 443 open, DNS for
+`icedos.mirrors.knp.one` pointing at the box.
 
-`core/modules/cache.nix` reads `nix-public.pem` (via the `cache-server` flake input) for
-`cache.key`, and `build.sh` uses it as the build substituter's trusted key.
+## Tokens (if ever needed)
 
-### 5. CI push token → GitHub secret
-
-```bash
-"$ATTICADM" make-token --sub ci --validity '1y' --pull icedos --push icedos
-```
-
-Add the result as the repo secret **`ATTIC_TOKEN`**. The old `SSH_KEY`, `SSH_HOST_KEY`, `SSH_HOST`,
-`SSH_USER`, and `NIX_SIGNING_KEY` secrets are no longer used — remove them.
-
-### 6. Point clients at the new cache
-
-Bump the core lock in your config (`icedos rebuild --update`) **after** steps 1–5 are live and
-`nix-public.pem` is pushed, so clients pick up the `…/icedos` URL and the matching key together.
-
-**Order matters:** export the secret before `up` (2); make the cache public and push the key (3–4)
-before clients bump the lock (6).
+`nix develop .#stack` exposes `generate_attic_admin_token` / `generate_attic_builder_token` — they run
+`atticadm` directly (atticd is on the host now). Export the secret first:
+`export ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64="$(sudo cat /etc/icedos-attic-secret)"`. The CI
+`ATTIC_TOKEN` (1y, pull+push `icedos`) is unchanged.
 
 ## Verify
 
 ```bash
-curl -sI https://icedos.mirrors.knp.one/icedos/nix-cache-info        # 200 — atticd responding
+free -m                                                              # dockerd/containerd/shims gone
+systemctl status icedos-stack
+curl -sI https://icedos.mirrors.knp.one/icedos/nix-cache-info        # 200, valid (Caddy) TLS
+curl -sI https://icedos.mirrors.knp.one/<path>.narinfo | grep -i x-cache-status   # MISS then HIT
 nix path-info --store https://icedos.mirrors.knp.one/icedos <path>   # a pushed custom path resolves
 ```
 
-After a CI run, its log should show `attic push` reporting paths **skipped (already on
-cache.nixos.org)** vs pushed — only custom paths upload.
-
-## Ongoing operation
-
-- **Garbage collection** — atticd GCs on `[garbage-collection].interval` (12h) using
-  `default-retention-period` (30d) from `server.toml`. It is **LRU/access-based**: an object is
-  removed once it has not been accessed (pulled, or re-pushed by CI) for the retention period, so
-  active paths stay and only stale ones age out. Override live with
-  `attic cache configure icedos --retention-period <dur>`.
-- **Auto-update** — `.github/workflows/auto-update.yml` runs every 3h: it updates the `nixpkgs`
-  input and, if its rev changed, commits the lock and dispatches `nix-build.yml`, refreshing the
-  cache against the new nixpkgs.
-- **Reclaim old space** — closures pushed during the previous nix-serve setup still sit in the
-  server's `/nix` store and are now unused; run `nix-collect-garbage -d` when convenient.
-
-## Secrets summary
+## Secrets
 
 | Secret | Where | Purpose |
 | --- | --- | --- |
-| `ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64` | server env (`/etc/icedos-attic-secret`) | atticd JWT signing |
+| `ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64` | `/etc/icedos-attic-secret-env` | atticd JWT signing |
 | `ATTIC_TOKEN` | GitHub repo secret | CI `attic push` auth (pull+push `icedos`) |
 | `nix-public.pem` | repo file | cache public key clients trust |
+
+Caddy manages the TLS certificate itself — no secret to handle.
