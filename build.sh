@@ -63,7 +63,21 @@ build_and_push() {
   ) && echo ok >"$root/build/status/$name" || echo fail >"$root/build/status/$name"
 }
 
+# Warm-up: build the bare base ALONE first (best-effort) so its shared closure is
+# realized, cached and pushed once. The parallel builds then only build/push their
+# own deltas instead of racing to (re)build the common base on a cold store —
+# measurably faster.
+base="config/00-base.toml"
+if [ -f "$base" ]; then
+  echo "=== warming shared base: $base ==="
+  build_and_push "$base"
+  [ "$(cat "$root/build/status/00-base" 2>/dev/null)" = "ok" ] \
+    || echo "WARNING: base warm-up failed; parallel builds will each build their own base" >&2
+fi
+
+# Fan out the remaining configs in parallel against the now-warm store, throttled.
 for cfg in config/*.toml; do
+  [ "$cfg" = "$base" ] && continue
   while [ "$(jobs -r | wc -l)" -ge "$max_parallel" ]; do wait -n || true; done
   build_and_push "$cfg" &
 done
