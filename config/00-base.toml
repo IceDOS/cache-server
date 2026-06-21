@@ -1,9 +1,10 @@
-# Bare IceDOS base — no repositories. build.sh builds this FIRST (serially) so the
-# shared base closure is realized, cached and pushed once. The other configs then
-# build in parallel against the warm store, each compiling only its own additions
-# instead of all of them rebuilding/refetching the common base on a cold store.
-[icedos]
-repositories = []
+[[icedos.repositories]]
+url = "github:icedos/apps"
+fetchDependencies = false
+
+[[icedos.repositories]]
+url = "github:icedos/hardware"
+fetchDependencies = false
 
 [icedos.system]
 version = "26.05"
