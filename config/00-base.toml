@@ -11,4 +11,8 @@ version = "26.05"
 
 [[icedos.system.overlays.fromChannel]]
 url = "github:nixos/nixpkgs/nixos-unstable-small"
-packages = ["kdePackages", "sunshine"]
+packages = ["kdePackages"]
+
+[[icedos.system.overlays.fromChannel]]
+url = "github:nixos/nixpkgs/nixpkgs-unstable"
+packages = ["sunshine"]
