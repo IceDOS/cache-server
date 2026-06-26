@@ -25,7 +25,3 @@ packages = [
   "stremio-linux-shell",
 ]
 version = "26.05"
-
-[[icedos.system.overlays.fromChannel]]
-url = "github:nixos/nixpkgs/nixpkgs-unstable"
-packages = ["sunshine"]

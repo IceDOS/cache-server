@@ -1,18 +1,6 @@
 [[icedos.repositories]]
-url = "github:icedos/apps"
-fetchDependencies = false
-
-[[icedos.repositories]]
 url = "github:icedos/hardware"
 fetchDependencies = false
 
 [icedos.system]
 version = "26.05"
-
-[[icedos.system.overlays.fromChannel]]
-url = "github:nixos/nixpkgs/nixos-unstable-small"
-packages = ["kdePackages"]
-
-[[icedos.system.overlays.fromChannel]]
-url = "github:nixos/nixpkgs/nixpkgs-unstable"
-packages = ["sunshine"]

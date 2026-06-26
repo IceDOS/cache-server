@@ -11,11 +11,4 @@ modules = [
 ]
 
 [icedos.system]
-packages = [
-  "kdePackages.plasma-bigscreen",
-]
 version = "26.05"
-
-[[icedos.system.overlays.fromChannel]]
-url = "github:nixos/nixpkgs/nixos-unstable-small"
-packages = ["kdePackages"]

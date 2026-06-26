@@ -1,15 +1,11 @@
 [[icedos.repositories]]
-url = "github:icedos/apps"
-fetchDependencies = false
-modules = ["zenergy"]
-
-[[icedos.repositories]]
 url = "github:icedos/hardware"
 fetchDependencies = false
 modules = [
   "cachyos-kernel",
   "kernel",
   "xpadneo",
+  "zenergy",
 ]
 
 [icedos.hardware.kernel]
