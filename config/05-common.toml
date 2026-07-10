@@ -23,11 +23,18 @@ modules = [
   "low-latency-vulkan-layer",
 ]
 
+[[icedos.repositories]]
+url = "github:icedos/providers"
+modules = [
+  "jovian",
+]
+
 [icedos.applications.steam.headlessSession]
-output = "NULL-0"
+hdr = true
 
 [icedos.system]
 packages = [
+  "android-studio",
   "stremio-linux-shell",
 ]
 version = "26.05"
