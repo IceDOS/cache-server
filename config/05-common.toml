@@ -30,6 +30,7 @@ modules = [
 ]
 
 [icedos.applications.steam.headlessSession]
+colorManagement = true
 hdr = true
 
 [icedos.system]
