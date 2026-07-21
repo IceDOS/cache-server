@@ -1,0 +1,10 @@
+[[icedos.repositories]]
+url = "github:icedos/hardware"
+fetchDependencies = false
+modules = ["graphics", "mesa"]
+
+[icedos.hardware.graphics.mesa]
+rc = true
+
+[icedos.system]
+version = "26.05"
