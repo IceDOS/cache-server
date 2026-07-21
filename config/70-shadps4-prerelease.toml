@@ -1,0 +1,10 @@
+[[icedos.repositories]]
+url = "github:icedos/apps"
+fetchDependencies = false
+modules = ["shadps4"]
+
+[icedos.applications.shadps4]
+prerelease = true
+
+[icedos.system]
+version = "26.05"
