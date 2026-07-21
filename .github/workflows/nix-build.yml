@@ -1,9 +1,9 @@
 name: Nix Build
 
+# Dispatch-only. Every trigger is an explicit API dispatch: auto-update.yml here after a
+# lock bump, and the update-mesa / update-shadps4 updaters in hardware / apps after they
+# pin something new. A push trigger would double-build on top of those dispatches.
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
