@@ -6,6 +6,9 @@ name: Nix Build
 on:
   workflow_dispatch:
 
+permissions:
+  actions: write
+
 concurrency:
   # Queue auto-triggered builds instead of cancelling — a cancel would kill an
   # in-progress (expensive) kernel compile and leave the cache unpopulated.
