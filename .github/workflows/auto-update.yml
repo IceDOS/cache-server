@@ -7,10 +7,7 @@ on:
     - cron: "*/30 * * * *"
   workflow_dispatch:
 
-# contents:write to push the lock bump; actions:write to dispatch the build.
-permissions:
-  contents: write
-  actions: write
+permissions: {}
 
 # Never run two updaters at once; let an in-flight one finish.
 concurrency:
@@ -26,6 +23,7 @@ jobs:
         with:
           nix_conf: |
             experimental-features = nix-command flakes
+            nix-path = nixpkgs=channel:nixos-unstable
 
       - name: Update nixpkgs and detect change
         id: update
@@ -38,29 +36,188 @@ jobs:
             echo "changed=false" >>"$GITHUB_OUTPUT"
           else
             echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "old=${old:0:12}" >>"$GITHUB_OUTPUT"
             echo "short=${new:0:12}" >>"$GITHUB_OUTPUT"
           fi
 
-      - name: Commit and push
-        if: steps.update.outputs.changed == 'true'
+      - name: Check tracked inputs
+        id: inputs
+        if: always()
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add flake.lock
-          git commit -m "chore(flake): bump nixpkgs to ${{ steps.update.outputs.short }}"
-          git push
+          changed_input_names=()
+          changed_input_details=()
 
-      # nix-build.yml is dispatch-only, and a GITHUB_TOKEN push would not cascade-trigger
-      # it in any case. Same shape as the updaters in hardware and apps, minus their App
-      # token — dispatching within the repo only needs this job's own actions:write.
-      - name: Trigger build
-        if: steps.update.outputs.changed == 'true'
+          while IFS= read -r name; do
+            configs_json=$(python3 -c "
+          import tomllib, json
+          with open('tracked-inputs.toml', 'rb') as f:
+              data = tomllib.load(f)
+          for entry in data['trackedInputs']:
+              if entry['name'] == '$name':
+                  print(json.dumps(entry['configs']))
+                  break
+          ") || continue
+            configs=($(echo "$configs_json" | jq -r '.[]'))
+
+            for cfg in "${configs[@]}"; do
+              work="$(mktemp -d -t tracked-XXXXXX)"
+
+              cp "config/$cfg" "$work/config.toml"
+              rsync -a --exclude=build --exclude=.git --exclude=state ./ "$work/"
+
+              (
+                cd "$work"
+                nix run .#icedos -- --genflake-only 2>&1 || exit 1
+                cd build/.state
+                nix flake lock 2>&1 || exit 1
+              ) || { rm -rf "$work"; continue; }
+
+              if [ -f "$work/build/.state/flake.lock" ]; then
+                new_rev=$(jq -r --arg name "$name" '
+                  [ .nodes | to_entries[]
+                    | select(.key | endswith("-" + $name)) ][0]
+                  // [ .nodes | to_entries[]
+                    | select(.key == $name) ][0]
+                  | .value.locked.rev // .value.original.rev // "unknown"
+                  | select(. != "unknown")
+                ' "$work/build/.state/flake.lock" 2>/dev/null | head -1)
+
+                if [ -n "$new_rev" ]; then
+                  input_key=$(jq -r --arg name "$name" '
+                    [ .nodes | to_entries[]
+                      | select(.key | endswith("-" + $name)) ][0]
+                    // [ .nodes | to_entries[]
+                      | select(.key == $name) ][0]
+                    | .key
+                  ' "$work/build/.state/flake.lock" 2>/dev/null | head -1)
+
+                  old_rev=$(jq -r --arg k "$input_key" '.[$k] // ""' state/tracked-inputs.json 2>/dev/null)
+
+                  if [ "$new_rev" != "$old_rev" ]; then
+                    changed_input_names+=("$name")
+                    if [ -n "$old_rev" ]; then
+                      changed_input_details+=("$name: ${old_rev:0:12} -> ${new_rev:0:12}")
+                    else
+                      changed_input_details+=("$name: ${new_rev:0:12}")
+                    fi
+                    jq --arg k "$input_key" --arg v "$new_rev" '.[$k] = $v' \
+                      state/tracked-inputs.json > state/tracked-inputs.tmp && \
+                      mv state/tracked-inputs.tmp state/tracked-inputs.json
+                  fi
+                fi
+              fi
+
+              rm -rf "$work"
+            done
+          done < <(python3 -c "
+          import tomllib
+          with open('tracked-inputs.toml', 'rb') as f:
+              data = tomllib.load(f)
+          for entry in data['trackedInputs']:
+              print(entry['name'])
+          ")
+
+          if [ ${#changed_input_names[@]} -gt 0 ]; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "names=$(IFS=,; echo "${changed_input_names[*]}")" >>"$GITHUB_OUTPUT"
+            {
+              echo "details<<DETAILS_EOF"
+              printf '%s\n' "${changed_input_details[@]}"
+              echo "DETAILS_EOF"
+            } >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint app token
+        id: app-token
+        if: steps.update.outputs.changed == 'true' || steps.inputs.outputs.changed == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.DISPATCH_APP_ID }}
+          private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
+          owner: IceDOS
+          repositories: cache-server
+
+      - name: Commit and push via API
+        id: commit
+        if: steps.update.outputs.changed == 'true' || steps.inputs.outputs.changed == 'true'
         uses: actions/github-script@v7
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+
+            function truncate(s) { return s.length <= 72 ? s : s.slice(0, 69) + '...'; }
+
+            const nixChanged = '${{ steps.update.outputs.changed }}' === 'true';
+            const inputsChanged = '${{ steps.inputs.outputs.changed }}' === 'true';
+            let subject, body = '';
+
+            if (nixChanged && !inputsChanged) {
+              subject = `update(nixpkgs): ${{ steps.update.outputs.old }} -> ${{ steps.update.outputs.short }}`;
+            } else if (inputsChanged && !nixChanged) {
+              subject = truncate(`update(inputs): ${{ steps.inputs.outputs.names }}`);
+              body = `${{ steps.inputs.outputs.details }}`;
+            } else {
+              subject = 'update: nixpkgs, inputs';
+              body = `nixpkgs: ${{ steps.update.outputs.old }} -> ${{ steps.update.outputs.short }}\n${{ steps.inputs.outputs.details }}`;
+            }
+
+            const commitMessage = body ? `${subject}\n\n${body}` : subject;
+
+            // Get current commit SHA
+            const ref = await github.rest.git.getRef({ owner, repo, ref: 'heads/main' });
+            const currentSha = ref.data.object.sha;
+
+            // Create blobs
+            const flakeLock = fs.readFileSync('flake.lock', 'utf8');
+            const trackedInputs = fs.readFileSync('state/tracked-inputs.json', 'utf8');
+
+            const [b1, b2] = await Promise.all([
+              github.rest.git.createBlob({ owner, repo, content: flakeLock, encoding: 'utf-8' }),
+              github.rest.git.createBlob({ owner, repo, content: trackedInputs, encoding: 'utf-8' }),
+            ]);
+
+            // Create tree
+            const tree = await github.rest.git.createTree({
+              owner, repo,
+              base_tree: currentSha,
+              tree: [
+                { path: 'flake.lock', mode: '100644', type: 'blob', sha: b1.data.sha },
+                { path: 'state/tracked-inputs.json', mode: '100644', type: 'blob', sha: b2.data.sha },
+              ],
+            });
+
+            // Create commit
+            const commit = await github.rest.git.createCommit({
+              owner, repo,
+              message: commitMessage,
+              tree: tree.data.sha,
+              parents: [currentSha],
+            });
+
+            // Update ref
+            await github.rest.git.updateRef({
+              owner, repo,
+              ref: 'heads/main',
+              sha: commit.data.sha,
+              force: true,
+            });
+
+            core.info(`Committed: ${subject}`);
+            core.setOutput('sha', commit.data.sha);
+
+      - name: Trigger build
+        if: steps.commit.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'nix-build.yml',
-              ref: context.ref.replace('refs/heads/', ''),
+              ref: 'main',
             });

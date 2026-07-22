@@ -1,0 +1,19 @@
+[[trackedInputs]]
+name = "nix-cachyos-kernel"
+configs = ["50-cachyos-kernel-v3.toml"]
+
+[[trackedInputs]]
+name = "ambiled"
+configs = ["05-common.toml"]
+
+[[trackedInputs]]
+name = "prefixer"
+configs = ["05-common.toml"]
+
+[[trackedInputs]]
+name = "plasmazones"
+configs = ["40-kde.toml"]
+
+[[trackedInputs]]
+name = "jovian"
+configs = ["05-common.toml"]
