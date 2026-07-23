@@ -29,7 +29,7 @@ modules = [
   "jovian",
 ]
 
-[icedos.applications.steam.headlessSession]
+[icedos.applications.steam.headless-session]
 colorManagement = true
 hdr = true
 
