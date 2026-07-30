@@ -3,7 +3,7 @@ url = "github:icedos/kde"
 modules = [
   "dynamic-workspaces",
   "foreground-booster",
-  "krohnkite",
+  "polonium",
   "layout-osd",
   "move-to-desktop-follow",
   "no-titlebar",
