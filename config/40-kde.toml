@@ -4,9 +4,7 @@ modules = [
   "dynamic-workspaces",
   "foreground-booster",
   "polonium",
-  "layout-osd",
   "move-to-desktop-follow",
-  "no-titlebar",
   "plasmazones",
   "window-borders",
 ]
