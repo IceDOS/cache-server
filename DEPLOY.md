@@ -12,7 +12,7 @@ The whole stack is a **foreground supervisor** (`stack/supervisor.sh`) running t
 no Docker, no containers, no daemon:
 
 - **atticd** — the binary cache (localhost `127.0.0.1:8080`). SQLite + storage under `/nix/attic`.
-- **nginx** — disk cache (`/nix/nar-cache`, 64 GB) on `127.0.0.1:8081`, shielding atticd's single
+- **nginx** — disk cache (`/nix/nar-cache`, 16 GB, 7-day eviction) on `127.0.0.1:8081`, shielding atticd's single
   core from repeat NAR reassembly.
 - **caddy** — the public TLS edge (`:80`/`:443`) with **fully automatic HTTPS** (issue + renew,
   zero intervention). Uploads stream straight to atticd; everything else goes through the nginx cache.
