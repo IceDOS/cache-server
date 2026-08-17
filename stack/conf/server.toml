@@ -13,6 +13,11 @@
 # is never exposed directly.
 listen = "127.0.0.1:8080"
 
+# The canonical API endpoint exposed to clients in cache-config responses.
+# Without this, atticd synthesizes the endpoint from the client's Host header,
+# which results in incorrect URLs (e.g. "atticd" instead of the real domain).
+api-endpoint = "https://icedos.mirrors.knp.one/"
+
 [database]
 # Runs directly on the host now (no container), so data lives under the host's
 # /nix/attic (the path that already holds the cache from the old stack).
