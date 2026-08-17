@@ -89,8 +89,9 @@
             }
 
             generate_attic_builder_token() {
+              validity="''${1:-1y}"
               ${atticadm} -f ${self}/stack/conf/server.toml \
-                make-token --sub ci --validity '1y' \
+                make-token --sub ci --validity "$validity" \
                 --pull icedos --push icedos
             }
           '';

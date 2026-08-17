@@ -58,6 +58,22 @@ jobs:
         run: |
           nix profile install nixpkgs#attic-client
           attic login icedos "$ICEDOS_SUBSTITUTER" "$ATTIC_TOKEN"
+          attic cache info icedos
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
+      - name: Test cache server
+        run: |
+          # POST to get-missing-paths — nginx only caches GETs, so this always
+          # reaches atticd. It also validates the API token (401 on bad/missing).
+          echo "Probing atticd API via $ICEDOS_SUBSTITUTER ..."
+          curl --fail --silent --show-error --retry 3 --retry-delay 5 \
+            -X POST \
+            -H "Authorization: Bearer $ATTIC_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"cache":"icedos","store_path_hashes":["00000000000000000000000000000000"]}' \
+            -w "\nHTTP %{http_code}\n" \
+            "$ICEDOS_SUBSTITUTER/_api/v1/get-missing-paths"
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
