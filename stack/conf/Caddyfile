@@ -8,11 +8,10 @@
 }
 
 icedos.mirrors.knp.one {
-	@upload {
-		method PUT
-		path /_api/v1/upload-path
+	@api {
+		path /_api/*
 	}
-	handle @upload {
+	handle @api {
 		reverse_proxy 127.0.0.1:8080 {
 			header_up Host {host}
 		}
