@@ -81,3 +81,4 @@ jobs:
         run: nix run .#build
         env:
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}

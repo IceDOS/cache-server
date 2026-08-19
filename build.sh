@@ -5,6 +5,27 @@ set -o pipefail
 
 root="$PWD"
 
+# Check if a store path already exists in the Attic cache.
+# Returns 0 if the path IS in the cache (i.e., we can skip building it).
+is_path_cached() {
+  local store_path="$1"
+  # Attic's get-missing-paths expects just the hash part (first 32 chars after /nix/store/)
+  local hash="${store_path#/nix/store/}"
+  hash="${hash:0:32}"
+
+  local resp
+  resp=$(curl -sf -X POST \
+    -H "Authorization: Bearer $ATTIC_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"cache\":\"icedos\",\"store_path_hashes\":[\"$hash\"]}" \
+    "$ICEDOS_SUBSTITUTER/_api/v1/get-missing-paths" 2>/dev/null) || return 1
+
+  # If missing_paths is empty, the path exists in cache
+  local missing_count
+  missing_count=$(echo "$resp" | jq '.missing_paths | length')
+  [ "$missing_count" -eq 0 ]
+}
+
 [ -d build ] && rm -rf build
 mkdir -p build/status
 
@@ -44,8 +65,20 @@ build_and_push() {
 
     mkdir -p "$out"
 
-    echo "building $cfg..."
     cd "$work"
+
+    # Check if this config's top-level system closure is already in the cache.
+    # Evaluate the store path without building, then query the Attic API.
+    if [ -n "${ATTIC_TOKEN:-}" ] && [ -n "${ICEDOS_SUBSTITUTER:-}" ]; then
+      top_path=$(nix eval --raw path:.#config.system.build.toplevel.outPath 2>/dev/null) || true
+      if [ -n "$top_path" ] && is_path_cached "$top_path"; then
+        echo "$cfg: top-level closure already in cache ($top_path), skipping build"
+        echo ok >"$root/build/status/$name"
+        return 0
+      fi
+    fi
+
+    echo "building $cfg..."
 
     TMPDIR="$out" nix run path:.#icedos -- --build \
       --nh-args --no-nom \
