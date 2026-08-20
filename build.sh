@@ -29,8 +29,24 @@ is_path_cached() {
 [ -d build ] && rm -rf build
 mkdir -p build/status
 
-workbase="$(mktemp -d -t icedos-cache-XXXXXX)"
-trap 'rm -rf "$workbase"' EXIT
+# The work dir path is BAKED into the closure: core exports `ICEDOS_STATE_DIR=$PWD/build/.state`
+# and genflake bakes it into `icedos.configurationLocation`, which nearly every `icedos` subcommand
+# script interpolates. A `mktemp` base therefore gives every run fresh hashes for ~38 paths per
+# config — rebuilt and re-pushed forever, and never a cache hit below. CI pins ICEDOS_WORKBASE to a
+# stable directory so identical inputs produce identical store paths; local runs keep mktemp.
+workbase="${ICEDOS_WORKBASE:-}"
+if [ -n "$workbase" ]; then
+  # Clear the CONTENTS, never the directory itself: CI creates it under root-owned
+  # /mnt (mode 1777), so the runner may write inside it but cannot unlink its entry
+  # in /mnt — `rm -rf "$workbase"` fails with EACCES.
+  clean_workbase() { find "$workbase" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true; }
+  mkdir -p "$workbase"
+  clean_workbase
+else
+  workbase="$(mktemp -d -t icedos-cache-XXXXXX)"
+  clean_workbase() { rm -rf "$workbase"; }
+fi
+trap clean_workbase EXIT
 
 max_parallel="${ICEDOS_MAX_PARALLEL:-6}"
 
@@ -42,7 +58,7 @@ max_parallel="${ICEDOS_MAX_PARALLEL:-6}"
 # the old sequential build, but the builds themselves overlap.
 build_and_push() {
   local cfg="$1"
-  local name work out result
+  local name work out result top_path pushed attempt
   name="$(basename "$cfg" .toml)"
   work="$workbase/$name"
   out="$work/out"
@@ -67,10 +83,20 @@ build_and_push() {
 
     cd "$work"
 
-    # Check if this config's top-level system closure is already in the cache.
-    # Evaluate the store path without building, then query the Attic API.
+    # Skip the whole build when this config's top-level closure is already cached.
+    # The NixOS system lives in the GENERATED flake (build/.state), not in the config
+    # root, so genflake has to run first — `--genflake-only` writes and locks it
+    # without realising anything, and the outPath is then a pure eval. The generated
+    # `nixosConfigurations.icedos` never uses `self`, so this is the same path
+    # `nh os build path:.` produces from its rsync'd copy.
+    top_path=""
     if [ -n "${ATTIC_TOKEN:-}" ] && [ -n "${ICEDOS_SUBSTITUTER:-}" ]; then
-      top_path=$(nix eval --raw path:.#config.system.build.toplevel.outPath 2>/dev/null) || true
+      if TMPDIR="$out" nix run path:.#icedos -- --genflake-only; then
+        top_path=$(nix eval --raw --no-write-lock-file \
+          "path:$work/build/.state#nixosConfigurations.icedos.config.system.build.toplevel.outPath" \
+          2>/dev/null) || top_path=""
+      fi
+
       if [ -n "$top_path" ] && is_path_cached "$top_path"; then
         echo "$cfg: top-level closure already in cache ($top_path), skipping build"
         echo ok >"$root/build/status/$name"
@@ -101,7 +127,26 @@ build_and_push() {
 
     # flock guarantees one push at a time across all parallel builds.
     echo "pushing $cfg..."
-    flock "$root/build/push.lock" attic push icedos "$result"
+
+    # `attic push` exits 0 even when individual paths fail (the 1-core server 500s
+    # under load), which silently leaves a half-populated cache and defeats the skip
+    # check above on the next run. `$result` IS the toplevel, so query it back as the
+    # witness that the closure landed, retry, and fail the config if it never does.
+    pushed=0
+    for attempt in 1 2 3; do
+      flock "$root/build/push.lock" attic push icedos "$result" || true
+      if [ -z "${ATTIC_TOKEN:-}" ] || [ -z "${ICEDOS_SUBSTITUTER:-}" ] || is_path_cached "$result"; then
+        pushed=1
+        break
+      fi
+      echo "$cfg: push attempt $attempt did not land $result, retrying" >&2
+      sleep $((attempt * 15))
+    done
+    [ "$pushed" -eq 1 ] || {
+      echo "$cfg: push failed after 3 attempts; $result still missing from the cache" >&2
+      exit 1
+    }
+
     echo "$cfg successfully built and uploaded to the cache server!"
   ) && echo ok >"$root/build/status/$name" || echo fail >"$root/build/status/$name"
 }

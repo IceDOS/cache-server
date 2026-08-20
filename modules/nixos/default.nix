@@ -1,4 +1,9 @@
-{ config, lib, ... }:
+{
+  config,
+  inputs,
+  lib,
+  ...
+}:
 
 let
   inherit (lib) mkForce;
@@ -25,4 +30,14 @@ in
   # Force udev on (as on a real, non-container system) so the EDID firmware + udev
   # rules land in the closure and the conflict resolves.
   services.udev.enable = lib.mkForce true;
+
+  # `nix.registry` is `mapAttrs (_: v: { flake = v; }) inputs` (core/modules/nix.nix),
+  # so it carries an entry for `self` — the GENERATED state flake. core/build.sh
+  # rewrites `build/.state/flake.nix` on every invocation, and a `path:` flake's
+  # `lastModified` is its mtime, so that entry gets a fresh wall-clock stamp per run
+  # even when narHash and content are byte-identical. That re-hashes
+  # etc-nix-registry.json -> etc -> activate -> system.build.toplevel, which would
+  # keep every CI run producing a brand-new (and therefore never-cached) toplevel.
+  # Repoint `self` at the config snapshot, whose store path pins lastModified to 1.
+  nix.registry.self = mkForce { flake = inputs.icedos-config; };
 }

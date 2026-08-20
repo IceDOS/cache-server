@@ -77,8 +77,18 @@ jobs:
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
+      # A stable work base, NOT mktemp: build.sh's per-config work dir ends up baked
+      # into the closure via `icedos.configurationLocation`, so a random path gives
+      # every run fresh hashes for ~38 paths per config and the cache check below can
+      # never hit. Lives on /mnt (the big btrfs loop) because nix builds inherit
+      # TMPDIR from under this dir; / only keeps the 10 GB safe haven.
+      - name: Prepare deterministic work dir
+        run: |
+          sudo mkdir -p /mnt/icedos-work
+          sudo chmod 1777 /mnt/icedos-work
       - name: Run Nix Build
         run: nix run .#build
         env:
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ICEDOS_WORKBASE: /mnt/icedos-work
