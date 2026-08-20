@@ -58,7 +58,7 @@ max_parallel="${ICEDOS_MAX_PARALLEL:-6}"
 # the old sequential build, but the builds themselves overlap.
 build_and_push() {
   local cfg="$1"
-  local name work out result top_path pushed attempt
+  local name work out result top_path pushed attempt push_rc push_out eval_err
   name="$(basename "$cfg" .toml)"
   work="$workbase/$name"
   out="$work/out"
@@ -89,12 +89,27 @@ build_and_push() {
     # without realising anything, and the outPath is then a pure eval. The generated
     # `nixosConfigurations.icedos` never uses `self`, so this is the same path
     # `nh os build path:.` produces from its rsync'd copy.
+    #
+    # pipe-operators is REQUIRED: core/lib/icedos.nix uses `|>`, so without it the
+    # eval dies at parse time in well under a second. core/build.sh exports its own
+    # NIX_CONFIG with that feature, but this eval runs in the workflow's shell, where
+    # nix-quick-install-action only enables nix-command and flakes. --extra- so the
+    # runner's own settings are added to, not replaced.
+    #
+    # stderr is kept and reprinted on failure: silencing it is what let this fail
+    # unnoticed for three runs — the check just fell through to a full rebuild.
     top_path=""
-    if [ -n "${ATTIC_TOKEN:-}" ] && [ -n "${ICEDOS_SUBSTITUTER:-}" ]; then
+    if [ -n "${ATTIC_TOKEN:-}" ] && [ -n "${ICEDOS_SUBSTITUTER:-}" ] && [ -z "${ICEDOS_FORCE_BUILD:-}" ]; then
       if TMPDIR="$out" nix run path:.#icedos -- --genflake-only; then
+        eval_err="$root/build/$name.eval.err"
         top_path=$(nix eval --raw --no-write-lock-file \
+          --extra-experimental-features "nix-command flakes pipe-operators" \
           "path:$work/build/.state#nixosConfigurations.icedos.config.system.build.toplevel.outPath" \
-          2>/dev/null) || top_path=""
+          2>"$eval_err") || {
+          top_path=""
+          echo "$cfg: could not evaluate the top-level closure, building unconditionally:" >&2
+          cat "$eval_err" >&2
+        }
       fi
 
       if [ -n "$top_path" ] && is_path_cached "$top_path"; then
@@ -129,21 +144,30 @@ build_and_push() {
     echo "pushing $cfg..."
 
     # `attic push` exits 0 even when individual paths fail (the 1-core server 500s
-    # under load), which silently leaves a half-populated cache and defeats the skip
-    # check above on the next run. `$result` IS the toplevel, so query it back as the
-    # witness that the closure landed, retry, and fail the config if it never does.
+    # under load; run3 lost 19 paths that way). That used to self-orphan harmlessly
+    # because every run re-pushed a fresh closure — but now that the skip check
+    # works, the next run finds the toplevel cached, skips the config, and the gap
+    # is permanent. Retry on attic's OWN per-path verdict: a re-push only re-uploads
+    # what is still missing, so a clean run prints no ❌ and pushes 0 paths.
+    # `get-missing-paths` over the whole closure cannot be used as the witness —
+    # attic deliberately skips paths served by cache.nixos.org, and the API reports
+    # every one of those as missing.
     pushed=0
     for attempt in 1 2 3; do
-      flock "$root/build/push.lock" attic push icedos "$result" || true
-      if [ -z "${ATTIC_TOKEN:-}" ] || [ -z "${ICEDOS_SUBSTITUTER:-}" ] || is_path_cached "$result"; then
+      push_rc=0
+      push_out="$(flock "$root/build/push.lock" attic push icedos "$result" 2>&1)" || push_rc=$?
+      printf '%s\n' "$push_out"
+
+      if [ "$push_rc" -eq 0 ] && ! printf '%s' "$push_out" | grep -q '❌'; then
         pushed=1
         break
       fi
-      echo "$cfg: push attempt $attempt did not land $result, retrying" >&2
+
+      echo "$cfg: push attempt $attempt reported failed paths (rc=$push_rc), retrying" >&2
       sleep $((attempt * 15))
     done
     [ "$pushed" -eq 1 ] || {
-      echo "$cfg: push failed after 3 attempts; $result still missing from the cache" >&2
+      echo "$cfg: push failed after 3 attempts; the cached closure for $result is incomplete" >&2
       exit 1
     }
 

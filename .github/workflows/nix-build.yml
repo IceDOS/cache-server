@@ -3,8 +3,17 @@ name: Nix Build
 # Dispatch-only. Every trigger is an explicit API dispatch: auto-update.yml here after a
 # lock bump, and the update-mesa / update-shadps4 updaters in hardware / apps after they
 # pin something new. A push trigger would double-build on top of those dispatches.
+#
+# `force` exists to repair the cache: a config whose toplevel is present but whose closure
+# is incomplete would otherwise be skipped forever. Optional with a default, so the API
+# dispatches from the updaters keep working unchanged.
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild and re-push every config even if its closure is already cached"
+        type: boolean
+        default: false
 
 permissions:
   actions: write
@@ -92,3 +101,4 @@ jobs:
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
           ICEDOS_WORKBASE: /mnt/icedos-work
+          ICEDOS_FORCE_BUILD: ${{ inputs.force && '1' || '' }}
