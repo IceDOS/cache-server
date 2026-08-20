@@ -5,11 +5,10 @@ set -o pipefail
 
 root="$PWD"
 
-# Check if a store path already exists in the Attic cache.
-# Returns 0 if the path IS in the cache (i.e., we can skip building it).
+# Returns 0 if the store path is already in the Attic cache.
 is_path_cached() {
   local store_path="$1"
-  # Attic's get-missing-paths expects just the hash part (first 32 chars after /nix/store/)
+  # get-missing-paths wants only the 32-char hash.
   local hash="${store_path#/nix/store/}"
   hash="${hash:0:32}"
 
@@ -20,7 +19,6 @@ is_path_cached() {
     -d "{\"cache\":\"icedos\",\"store_path_hashes\":[\"$hash\"]}" \
     "$ICEDOS_SUBSTITUTER/_api/v1/get-missing-paths" 2>/dev/null) || return 1
 
-  # If missing_paths is empty, the path exists in cache
   local missing_count
   missing_count=$(echo "$resp" | jq '.missing_paths | length')
   [ "$missing_count" -eq 0 ]
@@ -29,16 +27,12 @@ is_path_cached() {
 [ -d build ] && rm -rf build
 mkdir -p build/status
 
-# The work dir path is BAKED into the closure: core exports `ICEDOS_STATE_DIR=$PWD/build/.state`
-# and genflake bakes it into `icedos.configurationLocation`, which nearly every `icedos` subcommand
-# script interpolates. A `mktemp` base therefore gives every run fresh hashes for ~38 paths per
-# config — rebuilt and re-pushed forever, and never a cache hit below. CI pins ICEDOS_WORKBASE to a
-# stable directory so identical inputs produce identical store paths; local runs keep mktemp.
+# The work dir is baked into the closure via `icedos.configurationLocation`, so a mktemp base
+# gives every run fresh hashes for ~38 paths per config. CI pins ICEDOS_WORKBASE instead.
 workbase="${ICEDOS_WORKBASE:-}"
 if [ -n "$workbase" ]; then
-  # Clear the CONTENTS, never the directory itself: CI creates it under root-owned
-  # /mnt (mode 1777), so the runner may write inside it but cannot unlink its entry
-  # in /mnt — `rm -rf "$workbase"` fails with EACCES.
+  # Clear the CONTENTS, never the directory: CI creates it under root-owned /mnt, so the
+  # runner can write inside it but `rm -rf "$workbase"` fails with EACCES.
   clean_workbase() { find "$workbase" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true; }
   mkdir -p "$workbase"
   clean_workbase
@@ -50,12 +44,8 @@ trap clean_workbase EXIT
 
 max_parallel="${ICEDOS_MAX_PARALLEL:-6}"
 
-# Build one config in an isolated, git-less work dir (so the flake eval sees the
-# untracked config.toml), then push its result. The push is taken behind a flock
-# so only one `attic push` ever runs at a time: the first build to finish uploads
-# the shared base, the rest find it already present and skip it. The 1-core cache
-# server therefore only ever chunks one closure at a time — same gentle ingest as
-# the old sequential build, but the builds themselves overlap.
+# Build one config in an isolated, git-less work dir so the flake eval sees the untracked
+# config.toml. Pushes go behind a flock: the 1-core server only chunks one closure at a time.
 build_and_push() {
   local cfg="$1"
   local name work out result top_path pushed attempt push_rc push_out eval_err
@@ -65,15 +55,12 @@ build_and_push() {
 
   (
     set -e
-    # Isolated copy of the flake (sans build artifacts + git) so parallel builds
-    # never race on config.toml or the generated flake state.
+    # Isolated copy so parallel builds never race on config.toml or the flake state.
     rsync -a --exclude=build --exclude=.git "$root/" "$work/"
     cp "$cfg" "$work/config.toml"
 
-    # Reuse the shared inputs (nixpkgs, icedos-core, home-manager, …) already
-    # resolved by the base build: seed its lock so this build only resolves its
-    # OWN repos. nix populates the missing repo inputs on top (it locks them
-    # in-memory for the build; --no-update-lock-file doesn't block additions).
+    # Seed the base build's resolved lock so this build only resolves its OWN repos; nix
+    # adds the missing ones in-memory (--no-update-lock-file doesn't block additions).
     if [ -n "${BASE_LOCK:-}" ] && [ -f "${BASE_LOCK:-}" ] && [ "$cfg" != "$base" ]; then
       mkdir -p "$work/build/.state"
       cp "$BASE_LOCK" "$work/build/.state/flake.lock"
@@ -83,21 +70,11 @@ build_and_push() {
 
     cd "$work"
 
-    # Skip the whole build when this config's top-level closure is already cached.
-    # The NixOS system lives in the GENERATED flake (build/.state), not in the config
-    # root, so genflake has to run first — `--genflake-only` writes and locks it
-    # without realising anything, and the outPath is then a pure eval. The generated
-    # `nixosConfigurations.icedos` never uses `self`, so this is the same path
-    # `nh os build path:.` produces from its rsync'd copy.
+    # Skip the build when this config's toplevel is already cached. The NixOS system lives
+    # in the GENERATED flake, so genflake must run first; the outPath eval is then pure.
     #
-    # pipe-operators is REQUIRED: core/lib/icedos.nix uses `|>`, so without it the
-    # eval dies at parse time in well under a second. core/build.sh exports its own
-    # NIX_CONFIG with that feature, but this eval runs in the workflow's shell, where
-    # nix-quick-install-action only enables nix-command and flakes. --extra- so the
-    # runner's own settings are added to, not replaced.
-    #
-    # stderr is kept and reprinted on failure: silencing it is what let this fail
-    # unnoticed for three runs — the check just fell through to a full rebuild.
+    # pipe-operators is REQUIRED — core/lib/icedos.nix uses `|>` and the workflow's shell
+    # only enables nix-command + flakes. stderr is kept so a failed eval isn't silent.
     top_path=""
     if [ -n "${ATTIC_TOKEN:-}" ] && [ -n "${ICEDOS_SUBSTITUTER:-}" ] && [ -z "${ICEDOS_FORCE_BUILD:-}" ]; then
       if TMPDIR="$out" nix run path:.#icedos -- --genflake-only; then
@@ -130,7 +107,7 @@ build_and_push() {
       --extra-substituters "https://attic.xuyh0120.win/lantian?priority=90" \
       --extra-trusted-public-keys "lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc="
 
-    # Exactly one build dir lands under $out (TMPDIR); take its result link.
+    # Exactly one build dir lands under $out (TMPDIR).
     shopt -s nullglob
     local results=("$out"/*/result)
     shopt -u nullglob
@@ -140,18 +117,10 @@ build_and_push() {
     }
     result="$(readlink "${results[0]}")"
 
-    # flock guarantees one push at a time across all parallel builds.
     echo "pushing $cfg..."
 
-    # `attic push` exits 0 even when individual paths fail (the 1-core server 500s
-    # under load; run3 lost 19 paths that way). That used to self-orphan harmlessly
-    # because every run re-pushed a fresh closure — but now that the skip check
-    # works, the next run finds the toplevel cached, skips the config, and the gap
-    # is permanent. Retry on attic's OWN per-path verdict: a re-push only re-uploads
-    # what is still missing, so a clean run prints no ❌ and pushes 0 paths.
-    # `get-missing-paths` over the whole closure cannot be used as the witness —
-    # attic deliberately skips paths served by cache.nixos.org, and the API reports
-    # every one of those as missing.
+    # `attic push` exits 0 even when individual paths fail, and the skip check above would
+    # then make the gap permanent. Retry on attic's own ❌ verdict, not get-missing-paths.
     pushed=0
     for attempt in 1 2 3; do
       push_rc=0
@@ -175,10 +144,8 @@ build_and_push() {
   ) && echo ok >"$root/build/status/$name" || echo fail >"$root/build/status/$name"
 }
 
-# Warm-up: build the bare base ALONE first (best-effort) so its shared closure is
-# realized, cached and pushed once. The parallel builds then only build/push their
-# own deltas instead of racing to (re)build the common base on a cold store —
-# measurably faster.
+# Build the bare base alone first so its shared closure is realized and pushed once; the
+# parallel builds then only handle their own deltas instead of racing on a cold store.
 base="config/00-base.toml"
 BASE_LOCK=""
 if [ -f "$base" ]; then
@@ -200,7 +167,6 @@ for cfg in config/*.toml; do
 done
 wait
 
-# Collect failures (build OR push) and fail the run if any real config did not finish.
 failed=()
 for cfg in config/*.toml; do
   [ "$cfg" = "$base" ] && continue

@@ -6,8 +6,7 @@ modules = ["nvidia"]
 [icedos.hardware.graphics.nvidia]
 cuda = true
 
-# Full CUDA toolkit so the cudaSupport-variant build gets compiled once here and
-# cached, instead of every user compiling it locally.
+# Compile the cudaSupport variant once here instead of on every user's machine.
 [icedos.system]
 packages = [
   "cudaPackages.cudatoolkit",

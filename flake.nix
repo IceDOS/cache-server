@@ -24,10 +24,8 @@
       atticd = "${pkgs.attic-server}/bin/atticd";
       atticadm = "${pkgs.attic-server}/bin/atticadm";
 
-      # The whole stack is a foreground supervisor running three nix binaries
-      # (atticd + nginx + caddy) — no container runtime, no daemon. Binary and
-      # config store paths are baked into the @placeholders@ here; replaceVarsWith
-      # also fails the build if any placeholder is left unsubstituted.
+      # Foreground supervisor over three nix binaries — no container runtime.
+      # replaceVarsWith fails the build on any unsubstituted @placeholder@.
       supervisor = pkgs.replaceVarsWith {
         src = ./stack/supervisor.sh;
         name = "icedos-cache";
@@ -64,8 +62,7 @@
 
         icedos = icedosApp;
 
-        # `nix run .#stack` brings the whole stack up in the foreground; Ctrl-C
-        # (or SIGTERM from a systemd/OpenRC keep-alive wrapper) drops it.
+        # Foreground; Ctrl-C or SIGTERM from a keep-alive wrapper drops the stack.
         stack = {
           type = "app";
           program = "${supervisor}/bin/icedos-cache";
@@ -79,8 +76,7 @@
             attic-server
           ];
           shellHook = ''
-            # atticd runs on the host, so mint tokens with atticadm directly.
-            # Requires the JWT secret in the environment, e.g.:
+            # atticd runs on the host, so mint tokens with atticadm directly. Needs:
             #   export ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64="$(sudo cat /etc/icedos-attic-secret)"
             generate_attic_admin_token() {
               ${atticadm} -f ${self}/stack/conf/server.toml \

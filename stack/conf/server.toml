@@ -1,53 +1,36 @@
-# atticd (Attic Nix binary cache) server configuration.
-#
-# The JWT HS256 signing secret is NOT stored here — it is supplied out-of-band via the
-# ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64 environment variable (see compose.yml).
-# Generate it once with:  openssl rand 64 | base64 -w0
-#
-# NOTE: Attic's config schema is version-sensitive (e.g. recent versions moved the JWT
-# secret to a [jwt.signing] block). If atticd fails to start, validate this file against
-# the deployed atticd version. Supplying the secret via the env var above sidesteps the
-# top-level-vs-[jwt.signing] change.
+# The JWT HS256 secret comes from ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64, not this file
+# (`openssl rand 64 | base64 -w0`) — Attic moves that key between schema versions.
 
-# Localhost only — Caddy (TLS edge) and nginx (cache) are the public faces; atticd
-# is never exposed directly.
+# Localhost only; Caddy and nginx are the public faces.
 listen = "127.0.0.1:8080"
 
-# The canonical API endpoint exposed to clients in cache-config responses.
-# Without this, atticd synthesizes the endpoint from the client's Host header,
-# which results in incorrect URLs (e.g. "atticd" instead of the real domain).
+# Without this atticd synthesizes the endpoint from the Host header and emits wrong URLs.
 api-endpoint = "https://icedos.mirrors.knp.one/"
 
 [database]
-# Runs directly on the host now (no container), so data lives under the host's
-# /nix/attic (the path that already holds the cache from the old stack).
+# /nix/attic already holds the cache from the old containerised stack.
 url = "sqlite:///nix/attic/server.db?mode=rwc"
-# Disable heartbeat queries — saves a query/minute on a single-core box.
+# Saves a query/minute on a single-core box.
 heartbeat = false
 
 [storage]
 type = "local"
 path = "/nix/attic/storage"
 
-# Content-addressed chunking → global deduplication across every pushed path.
-# Larger chunks = fewer reassembly operations per NAR request (less CPU on single-core).
-# Trade-off: slightly reduced dedup ratio, but this box is CPU-bound not storage-bound.
+# Content-addressed chunking = global dedup. Larger chunks trade dedup ratio for fewer
+# reassembly operations per NAR; this box is CPU-bound, not storage-bound.
 [chunking]
 nar-size-threshold = 131072
 min-size = 32768
 avg-size = 131072
 max-size = 524288
 
-# Disable compression to reduce CPU overhead on server
+# CPU overhead is the scarce resource here, not disk.
 [compression]
 type = "none"
 
-# GC runs every `interval`. `default-retention-period` is the server-wide default
-# applied to every cache (override per-cache with `attic cache configure icedos
-# --retention-period <dur>`). LRU/access-based: an object is removed once it has not
-# been ACCESSED (pulled, or re-pushed by CI) for the retention period — actively-used
-# paths stay, only stale ones (old kernel versions, removed configs) age out.
-# Zero/unset = time-based GC DISABLED, so this key is required to clean anything.
+# Access-based: an object ages out only if it was neither pulled nor re-pushed for the
+# retention period. Zero/unset disables time-based GC entirely, so this key is required.
 [garbage-collection]
 interval = "12 hours"
 default-retention-period = "30d"

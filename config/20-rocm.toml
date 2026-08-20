@@ -6,8 +6,7 @@ modules = ["radeon"]
 [icedos.hardware.graphics.radeon]
 rocm = true
 
-# Full ROCm toolkit so the rocmSupport-variant builds (absent from cache.nixos.org)
-# get compiled once here and cached, instead of every user compiling them locally.
+# Compile the rocmSupport variants once here; cache.nixos.org carries none of them.
 [icedos.system]
 packages = [
   "rocmPackages.clr",

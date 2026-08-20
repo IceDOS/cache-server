@@ -1,12 +1,10 @@
 name: Nix Build
 
-# Dispatch-only. Every trigger is an explicit API dispatch: auto-update.yml here after a
-# lock bump, and the update-mesa / update-shadps4 updaters in hardware / apps after they
-# pin something new. A push trigger would double-build on top of those dispatches.
+# Dispatch-only: auto-update.yml after a lock bump, and the mesa / shadps4 updaters in
+# hardware / apps. A push trigger would double-build on top of those dispatches.
 #
-# `force` exists to repair the cache: a config whose toplevel is present but whose closure
-# is incomplete would otherwise be skipped forever. Optional with a default, so the API
-# dispatches from the updaters keep working unchanged.
+# `force` repairs the cache: a config with a present toplevel but an incomplete closure
+# would otherwise be skipped forever.
 on:
   workflow_dispatch:
     inputs:
@@ -19,8 +17,7 @@ permissions:
   actions: write
 
 concurrency:
-  # Queue auto-triggered builds instead of cancelling — a cancel would kill an
-  # in-progress (expensive) kernel compile and leave the cache unpopulated.
+  # Queue instead of cancelling — a cancel kills an in-progress kernel compile.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
@@ -29,20 +26,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Reclaim /mnt for a large /nix store (runner / is only ~17 GB). MUST run before Nix is
-      # installed (the action aborts if /nix already exists). nix-permission-edict gives the runner
-      # user ownership of /nix so the single-user install + cache-nix-action restore can write into it.
+      # Reclaim /mnt for a large /nix store (runner / is ~17 GB). MUST precede the Nix install.
+      # nix-permission-edict hands the runner user /nix so the cache restore can write into it.
       - uses: wimpysworld/nothing-but-nix@v10
         with:
           hatchet-protocol: 'rampage'
           nix-permission-edict: true
-          # Keep enough free on / for the post-run cache-nix-action tarball.
-          # rampage otherwise reclaims / down to the 2 GB default, too small for
-          # cache.tzst (~half of gc-max-store-size, ~4 GB) -> "No space left on
-          # device". The build still has ~100 GB across / + /mnt.
+          # rampage otherwise reclaims / to 2 GB, too small for the post-run cache.tzst
+          # (~4 GB). The build still has ~100 GB across / + /mnt.
           root-safe-haven: '10240'
-      # Single-user install: runner owns /nix so cache-nix-action can restore into it.
-      # (Multi-user install-nix-action leaves /nix root-owned -> restore "Permission denied".)
+      # Single-user: the runner owns /nix, so cache-nix-action can restore into it.
+      # Multi-user install-nix-action leaves it root-owned -> "Permission denied".
       - uses: nixbuild/nix-quick-install-action@v30
         with:
           nix_conf: |
@@ -56,9 +50,8 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'config/*.toml') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-          # Cap the saved store below GitHub's 10GB/repo cache ceiling
+          # Below GitHub's 10 GB/repo cache ceiling.
           gc-max-store-size: 8000000000
-          # Keep only the freshest cache for this prefix
           purge: true
           purge-prefixes: nix-${{ runner.os }}-
           purge-created: 0
@@ -73,8 +66,7 @@ jobs:
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
       - name: Test cache server
         run: |
-          # POST to get-missing-paths — nginx only caches GETs, so this always
-          # reaches atticd. It also validates the API token (401 on bad/missing).
+          # A POST bypasses the nginx GET cache and validates the token (401 on bad).
           echo "Probing atticd API via $ICEDOS_SUBSTITUTER ..."
           curl --fail --silent --show-error --retry 3 --retry-delay 5 \
             -X POST \
@@ -86,11 +78,8 @@ jobs:
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
-      # A stable work base, NOT mktemp: build.sh's per-config work dir ends up baked
-      # into the closure via `icedos.configurationLocation`, so a random path gives
-      # every run fresh hashes for ~38 paths per config and the cache check below can
-      # never hit. Lives on /mnt (the big btrfs loop) because nix builds inherit
-      # TMPDIR from under this dir; / only keeps the 10 GB safe haven.
+      # Stable, NOT mktemp: the work dir is baked into the closure, so a random path
+      # re-hashes ~38 paths per config. On /mnt because builds inherit TMPDIR from here.
       - name: Prepare deterministic work dir
         run: |
           sudo mkdir -p /mnt/icedos-work

@@ -1,7 +1,5 @@
-# Caddy = the TLS edge with fully automatic HTTPS (issue + renew, zero
-# intervention). Uploads go straight to atticd (streamed, never cached); all
-# other traffic goes through the nginx disk cache. Both upstreams are localhost
-# (atticd + nginx run as sibling processes under the supervisor).
+# TLS edge, automatic issue + renew. Uploads stream straight to atticd; everything
+# else goes through the nginx disk cache. Both upstreams are localhost.
 {
 	admin off
 	grace_period 10s
