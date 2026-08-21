@@ -3,11 +3,11 @@
     "cache-server": {
       "flake": false,
       "locked": {
-        "lastModified": 1787241048,
-        "narHash": "sha256-W8kboSPKfNHabiqjg2ixU1IIbx5AzyZOD0i3VCPJ4GI=",
+        "lastModified": 1787266627,
+        "narHash": "sha256-pftkfopmf4GDFxlABtAam3MRXLogqrqq/1NIQAblWcI=",
         "owner": "icedos",
         "repo": "cache-server",
-        "rev": "9461cf675c6ecf647c9ba05cc7ecb982d176e4ec",
+        "rev": "1e6f3299dc76d1a12cb6f8f66f56e0cef89753c7",
         "type": "github"
       },
       "original": {
