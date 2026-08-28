@@ -70,11 +70,8 @@ build_and_push() {
 
     cd "$work"
 
-    # Skip the build when this config's toplevel is already cached. The NixOS system lives
-    # in the GENERATED flake, so genflake must run first; the outPath eval is then pure.
-    #
-    # pipe-operators is REQUIRED — core/lib/icedos.nix uses `|>` and the workflow's shell
-    # only enables nix-command + flakes. stderr is kept so a failed eval isn't silent.
+    # Skip when the top-level closure is already cached; genflake runs first for the pure outPath eval.
+    # pipe-operators is REQUIRED — core/lib/icedos.nix uses `|>`; stderr kept so failed evals aren't silent.
     top_path=""
     if [ -n "${ATTIC_TOKEN:-}" ] && [ -n "${ICEDOS_SUBSTITUTER:-}" ] && [ -z "${ICEDOS_FORCE_BUILD:-}" ]; then
       if TMPDIR="$out" nix run path:.#icedos -- --genflake-only; then
@@ -107,7 +104,6 @@ build_and_push() {
       --extra-substituters "https://attic.xuyh0120.win/lantian?priority=90" \
       --extra-trusted-public-keys "lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc="
 
-    # Exactly one build dir lands under $out (TMPDIR).
     shopt -s nullglob
     local results=("$out"/*/result)
     shopt -u nullglob
@@ -152,7 +148,6 @@ if [ -f "$base" ]; then
   echo "=== warming shared base: $base ==="
   build_and_push "$base"
   if [ "$(cat "$root/build/status/00-base" 2>/dev/null)" = "ok" ]; then
-    # Hand the base's resolved input lock to every later build (see build_and_push).
     BASE_LOCK="$workbase/00-base/build/.state/flake.lock"
   else
     echo "WARNING: base warm-up failed; parallel builds will each resolve their own inputs" >&2

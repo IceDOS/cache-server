@@ -2,8 +2,7 @@ name: Auto Update flake.lock
 
 on:
   schedule:
-    # Every 30 minutes (UTC). GitHub may delay or skip scheduled runs under load,
-    # and they only run on the default branch.
+    # GitHub may delay or skip scheduled runs, and they only fire on the default branch.
     - cron: "*/30 * * * *"
   workflow_dispatch:
 
@@ -48,12 +47,12 @@ jobs:
           changed_input_details=()
 
           while IFS= read -r name; do
-            configs_json=$(python3 -c "
-          import tomllib, json
+            configs_json=$(TRACKED_NAME="$name" python3 -c "
+          import tomllib, json, os
           with open('tracked-inputs.toml', 'rb') as f:
               data = tomllib.load(f)
           for entry in data['trackedInputs']:
-              if entry['name'] == '$name':
+              if entry['name'] == os.environ['TRACKED_NAME']:
                   print(json.dumps(entry['configs']))
                   break
           ") || continue
@@ -73,24 +72,37 @@ jobs:
               ) || { rm -rf "$work"; continue; }
 
               if [ -f "$work/build/.state/flake.lock" ]; then
-                new_rev=$(jq -r --arg name "$name" '
-                  [ .nodes | to_entries[]
-                    | select(.key | endswith("-" + $name)) ][0]
-                  // [ .nodes | to_entries[]
-                    | select(.key == $name) ][0]
-                  | .value.locked.rev // .value.original.rev // "unknown"
-                  | select(. != "unknown")
-                ' "$work/build/.state/flake.lock" 2>/dev/null | head -1)
+                new_rev=""
+                # A tracked input is the bare LEAF node (`nodes.<name>`) inside its module's
+                # sub-flake. Exact match wins; the endswith fallback handles legacy locks.
+                # A `follows` input is an array we cannot resolve to a revision, so skip it
+                # instead of reading the sub-root's rev. `select(. != null)` keeps a miss
+                # from leaking the literal "null".
+                lookup='
+                  [ .nodes | to_entries[] | select(.key == $name) | .key ][0] as $exact
+                  | [ .nodes | to_entries[] | select(.key | endswith("-" + $name)) | .key ][0] as $sub
+                  | (if $exact != null then $exact else $sub end) as $key
+                  | if $key == null then null
+                    else (.nodes[$key].inputs[$name]?) as $entry
+                      | if ($entry | type) == "string" then $entry
+                        elif ($entry | type) != "array" then $key
+                        else null
+                        end
+                    end
+                  | select(. != null)
+                '
+                input_key=$(jq -r --arg name "$name" "$lookup" "$work/build/.state/flake.lock")
+
+                if [ -n "$input_key" ]; then
+                  new_rev=$(jq -r --arg k "$input_key" '.nodes[$k].locked.rev // .nodes[$k].original.rev // ""' "$work/build/.state/flake.lock")
+                  if [ -z "$new_rev" ]; then
+                    echo "warning: found input '$name' at node '$input_key' but it has no revision" >&2
+                  fi
+                else
+                  echo "warning: could not locate tracked input '$name' in build/.state/flake.lock" >&2
+                fi
 
                 if [ -n "$new_rev" ]; then
-                  input_key=$(jq -r --arg name "$name" '
-                    [ .nodes | to_entries[]
-                      | select(.key | endswith("-" + $name)) ][0]
-                    // [ .nodes | to_entries[]
-                      | select(.key == $name) ][0]
-                    | .key
-                  ' "$work/build/.state/flake.lock" 2>/dev/null | head -1)
-
                   old_rev=$(jq -r --arg k "$input_key" '.[$k] // ""' state/tracked-inputs.json 2>/dev/null)
 
                   if [ "$new_rev" != "$old_rev" ]; then
@@ -167,11 +179,9 @@ jobs:
 
             const commitMessage = body ? `${subject}\n\n${body}` : subject;
 
-            // Get current commit SHA
             const ref = await github.rest.git.getRef({ owner, repo, ref: 'heads/main' });
             const currentSha = ref.data.object.sha;
 
-            // Create blobs
             const flakeLock = fs.readFileSync('flake.lock', 'utf8');
             const trackedInputs = fs.readFileSync('state/tracked-inputs.json', 'utf8');
 
@@ -180,7 +190,6 @@ jobs:
               github.rest.git.createBlob({ owner, repo, content: trackedInputs, encoding: 'utf-8' }),
             ]);
 
-            // Create tree
             const tree = await github.rest.git.createTree({
               owner, repo,
               base_tree: currentSha,
@@ -190,7 +199,6 @@ jobs:
               ],
             });
 
-            // Create commit
             const commit = await github.rest.git.createCommit({
               owner, repo,
               message: commitMessage,
@@ -198,12 +206,12 @@ jobs:
               parents: [currentSha],
             });
 
-            // Update ref
+            // No force: only ever fast-forward, so a commit that lands between the
+            // getRef above and this push is never clobbered (the step fails instead).
             await github.rest.git.updateRef({
               owner, repo,
               ref: 'heads/main',
               sha: commit.data.sha,
-              force: true,
             });
 
             core.info(`Committed: ${subject}`);

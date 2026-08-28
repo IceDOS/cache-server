@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs atticd + nginx + caddy as foreground children; any signal, exit, or child death
-# drops the whole stack. Does NOT daemonise — wrap it (systemd Restart=always, OpenRC).
+# Runs atticd + nginx + caddy as foreground children; any signal or child death drops the
+# whole stack (wait -n + exit 1). Does NOT daemonise — wrap it (systemd Restart=always).
 set -uo pipefail
 
 : "${ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64:?must be set (systemd EnvironmentFile, or exported before run)}"
