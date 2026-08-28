@@ -4,7 +4,6 @@ fetchDependencies = false
 modules = [
   "ambiled",
   "bb-launcher",
-  "eden",
   "nx-optimizer",
   "prefixer",
   "prime-agent",
