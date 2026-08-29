@@ -1,3 +1,4 @@
 build
 keys
 nix-private.pem
+__pycache__/
