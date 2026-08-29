@@ -100,7 +100,7 @@ jobs:
                     # Keyed by name: an input with several configs keeps only its latest rev.
                     if [ -n "$old_rev" ]; then old_json="\"$old_rev\""; else old_json=null; fi
                     revs_json=$(jq -c --arg n "$name" --arg k "$input_key" --arg r "$new_rev" --argjson o "$old_json" \
-                      '. + {($n): {key:$k, rev:$r, old:$o}}' <<<"$revs_json")
+                      '. + {($n): {name:$n, key:$k, rev:$r, old:$o}}' <<<"$revs_json")
                   fi
                 fi
               fi
