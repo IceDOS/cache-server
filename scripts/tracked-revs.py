@@ -13,6 +13,18 @@ import tomllib
 from pathlib import Path
 
 
+def repo_of(node: dict) -> str:
+    # "scheme:owner/repo" identity of the leaf, so consumers can guard a name
+    # match against the repo it actually points at.
+    orig = node.get("original") or {}
+    kind = orig.get("type")
+    if kind in ("github", "gitlab", "sourcehut"):
+        return f"{kind}:{orig.get('owner')}/{orig.get('repo')}"
+    if kind == "git":
+        return orig.get("url", "")
+    return ""
+
+
 def lookup(lock: dict, name: str):
     nodes = lock.get("nodes", {})
     key = name if name in nodes else next((k for k in nodes if k.endswith("-" + name)), None)
@@ -27,7 +39,7 @@ def lookup(lock: dict, name: str):
 
     node = nodes.get(key) or {}
     rev = (node.get("locked") or {}).get("rev") or (node.get("original") or {}).get("rev")
-    return {"key": key, "rev": rev} if rev else None
+    return {"key": key, "rev": rev, "repo": repo_of(node)} if rev else None
 
 
 def tracked_names(toml_path: str) -> list[str]:
