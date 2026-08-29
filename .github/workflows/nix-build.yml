@@ -4,11 +4,11 @@ name: Nix Build
 # source, this workflow builds and pushes it, and the merge step below runs only after
 # every config is in the cache. A push trigger would double-build on top of that.
 #
-# The commit back to main carries the input revs the build ACTUALLY resolved (detection
-# and build resolve at different times), folded into the merge commit itself — one run,
-# one commit. workflow_dispatch on main is the repair path: `force` rebuilds a config
-# whose toplevel is present but whose closure is incomplete (it would otherwise be
-# skipped forever).
+# The merge carries the input revs the build ACTUALLY resolved (detection and build
+# resolve at different times): the branch is rewritten as one commit holding them, then
+# rebase-merged — one run, one commit, native Merged state. workflow_dispatch on main is
+# the repair path: `force` rebuilds a config whose toplevel is present but whose closure
+# is incomplete (it would otherwise be skipped forever).
 #
 # Concurrency is a single global queue: builds share the runner store cache, and a
 # cancel would kill an in-progress kernel compile.
@@ -129,10 +129,10 @@ jobs:
             --base state/tracked-inputs.json >build/built-revs.json
           cat build/built-revs.json
 
-      # GitHub's PR merge commits the PR head as-is; the built revs must be folded into
-      # the commit, so main is fast-forwarded via the Git data API instead. The PR is
-      # closed (not "merged") — its number is referenced in the commit message.
-      - name: Commit built state to main
+      # pulls.merge commits the PR head as-is, so the branch is first rewritten as a
+      # single commit on top of main with the built revs folded in; rebase merge then
+      # lands exactly that commit. Needs "allow rebase merges" on the repo.
+      - name: Merge PR after successful build
         id: merge
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -151,7 +151,7 @@ jobs:
 
             // Head moved while this run sat in the build queue; the newer run owns it.
             if (pr.head.sha !== context.payload.pull_request.head.sha) {
-              core.warning('head moved since this build started; skipping commit');
+              core.warning('head moved since this build started; skipping merge');
               return;
             }
 
@@ -159,7 +159,7 @@ jobs:
             // the branch onto the new main and the build re-runs there.
             const mainSha = (await github.rest.git.getRef({ owner, repo, ref: 'heads/main' })).data.object.sha;
             if (pr.base.sha !== mainSha) {
-              core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}); skipping commit`);
+              core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}); skipping merge`);
               return;
             }
 
@@ -178,18 +178,27 @@ jobs:
             }
 
             const tree = await github.rest.git.createTree({ owner, repo, base_tree: pr.head.sha, tree: treeEntries });
-            const message = `${pr.title}${pr.body ? `\n\n${pr.body}` : ''} (#${pr.number})`;
+            const message = `${pr.title}${pr.body ? `\n\n${pr.body}` : ''}`;
             const commit = await github.rest.git.createCommit({
               owner, repo, message, tree: tree.data.sha, parents: [mainSha],
             });
+            await github.rest.git.updateRef({ owner, repo, ref: `heads/${pr.head.ref}`, sha: commit.data.sha, force: true });
 
-            // Non-force: fails instead of clobbering if main moved since the check above.
-            await github.rest.git.updateRef({ owner, repo, ref: 'heads/main', sha: commit.data.sha });
-            await github.rest.pulls.update({ owner, repo, pull_number: prNumber, state: 'closed' });
+            try {
+              await github.rest.pulls.merge({
+                owner, repo, pull_number: prNumber,
+                sha: commit.data.sha,
+                merge_method: 'rebase',
+              });
+            } catch (e) {
+              // main moved or rebase merges disabled; auto-update re-forks and rebuilds.
+              core.warning(`merge failed: ${e.message}`);
+              return;
+            }
             core.setOutput('merged', 'true');
-            core.info(`main fast-forwarded to ${commit.data.sha.slice(0, 12)} for PR #${prNumber}`);
+            core.info(`merged PR #${prNumber} into main (${commit.data.sha.slice(0, 12)})`);
 
-            // A previously failed build's status comment is stale once we commit.
+            // A previously failed build's status comment is stale once we merge.
             const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
             const stale = comments.find(c => c.body?.includes('<!-- icedos-cache-build-status -->'));
             if (stale) await github.rest.issues.deleteComment({ owner, repo, comment_id: stale.id });
