@@ -1,10 +1,28 @@
 # Cache-server deployment
 
 The cache-server is a self-hosted [Attic](https://github.com/zhaofengli/attic) Nix binary cache.
-CI (`.github/workflows/nix-build.yml`) builds the configs under `config/` and pushes **only
-icedos-custom paths** with `attic push` — paths already on `cache.nixos.org` are skipped, and
-content is globally deduplicated. Clients fetch generic paths from `cache.nixos.org` and custom
-paths from this cache.
+CI is PR-first: `.github/workflows/auto-update.yml` opens one pull request per change source
+(nixpkgs bump, each tracked input), `.github/workflows/nix-build.yml` builds each PR and pushes
+**only icedos-custom paths** with `attic push`, and the PR is merged into `main` only after that
+push succeeds — so `main` always describes a state the cache can fully serve. Paths already on
+`cache.nixos.org` are skipped, and content is globally deduplicated. Clients fetch generic paths
+from `cache.nixos.org` and custom paths from this cache.
+
+## Published branches
+
+Every successful build (and every `force` repair run on `main`) republishes the **`cache`**
+branch as a single orphan commit — no history — containing:
+
+- `nix-public.pem` — the cache's public key,
+- `flake.lock` — the pinned `nixpkgs`/`core` revisions,
+- `tracked-inputs.json` — the revision of every tracked input the cache was built against.
+  These are the revs the CI build **actually resolved**, folded into the merge commit itself —
+  not just what the detector saw — so they always describe servable closures.
+
+Following `cache` and pinning your inputs to those revisions guarantees every closure resolves
+from the cache instead of compiling locally. The legacy `key` branch (just the public key) is no
+longer updated automatically; `core/flake.nix` should migrate its `cache-server` input from
+`github:icedos/cache-server/key` to `github:icedos/cache-server/cache`.
 
 ## Stack
 

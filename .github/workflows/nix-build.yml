@@ -1,10 +1,17 @@
 name: Nix Build
 
-# Dispatch-only: auto-update.yml after a lock bump, and the mesa / shadps4 updaters in
-# hardware / apps. A push trigger would double-build on top of those dispatches.
+# PRs are the only way updates reach main: auto-update.yml opens one PR per change
+# source, this workflow builds and pushes it, and the merge step below runs only after
+# every config is in the cache. A push trigger would double-build on top of that.
 #
-# `force` repairs the cache: a config with a present toplevel but an incomplete closure
-# would otherwise be skipped forever.
+# The commit back to main carries the input revs the build ACTUALLY resolved (detection
+# and build resolve at different times), folded into the merge commit itself — one run,
+# one commit. workflow_dispatch on main is the repair path: `force` rebuilds a config
+# whose toplevel is present but whose closure is incomplete (it would otherwise be
+# skipped forever).
+#
+# Concurrency is a single global queue: builds share the runner store cache, and a
+# cancel would kill an in-progress kernel compile.
 on:
   workflow_dispatch:
     inputs:
@@ -12,13 +19,19 @@ on:
         description: "Rebuild and re-push every config even if its closure is already cached"
         type: boolean
         default: false
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - flake.lock
+      - config/**
+      - state/tracked-inputs.json
 
 permissions:
-  actions: write
+  contents: write
+  pull-requests: write
 
 concurrency:
-  # Queue instead of cancelling — a cancel kills an in-progress kernel compile.
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
@@ -26,6 +39,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Build exactly the PR head: a rebase merge then makes main identical to what
+          # was built. Falls back to the default ref for workflow_dispatch.
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
       # Reclaim /mnt for a large /nix store (runner / is ~17 GB). MUST precede the Nix install.
       # nix-permission-edict hands the runner user /nix so the cache restore can write into it.
       - uses: wimpysworld/nothing-but-nix@v10
@@ -84,6 +101,16 @@ jobs:
         run: |
           sudo mkdir -p /mnt/icedos-work
           sudo chmod 1777 /mnt/icedos-work
+      # Minted before the build (not after) so the failure step still has a token.
+      - name: Mint app token
+        id: app-token
+        if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.DISPATCH_APP_ID }}
+          private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
+          owner: IceDOS
+          repositories: cache-server
       - name: Run Nix Build
         run: nix run .#build
         env:
@@ -91,3 +118,171 @@ jobs:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
           ICEDOS_WORKBASE: /mnt/icedos-work
           ICEDOS_FORCE_BUILD: ${{ inputs.force && '1' || '' }}
+
+      - name: Extract built input hashes
+        id: hashes
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/tracked-revs.py diff \
+            --toml tracked-inputs.toml \
+            --locks-dir build/locks \
+            --base state/tracked-inputs.json >build/built-revs.json
+          cat build/built-revs.json
+
+      # GitHub's PR merge commits the PR head as-is; the built revs must be folded into
+      # the commit, so main is fast-forwarded via the Git data API instead. The PR is
+      # closed (not "merged") — its number is referenced in the commit message.
+      - name: Commit built state to main
+        id: merge
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
+
+            if (pr.state !== 'open') {
+              core.info(`PR #${prNumber} is ${pr.state}; nothing to merge`);
+              return;
+            }
+
+            // Head moved while this run sat in the build queue; the newer run owns it.
+            if (pr.head.sha !== context.payload.pull_request.head.sha) {
+              core.warning('head moved since this build started; skipping commit');
+              return;
+            }
+
+            // Base moved: this build validated an outdated main. auto-update re-forks
+            // the branch onto the new main and the build re-runs there.
+            const mainSha = (await github.rest.git.getRef({ owner, repo, ref: 'heads/main' })).data.object.sha;
+            if (pr.base.sha !== mainSha) {
+              core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}); skipping commit`);
+              return;
+            }
+
+            // Fold the revs the build actually resolved into the bookkeeping file; a
+            // build-only change, so the cached closures still match main exactly.
+            const built = JSON.parse(fs.readFileSync('build/built-revs.json', 'utf8'));
+            let treeEntries = [];
+            if (Object.keys(built).length > 0) {
+              const file = JSON.parse(fs.readFileSync('state/tracked-inputs.json', 'utf8'));
+              for (const r of Object.values(built)) file[r.key] = r.rev;
+              const content = JSON.stringify(file, null, 2) + '\n';
+              const blob = (await github.rest.git.createBlob({ owner, repo, content, encoding: 'utf-8' })).data.sha;
+              treeEntries = [{ path: 'state/tracked-inputs.json', mode: '100644', type: 'blob', sha: blob }];
+              // The publish step reads the workspace copy after this step.
+              fs.writeFileSync('state/tracked-inputs.json', content);
+            }
+
+            const tree = await github.rest.git.createTree({ owner, repo, base_tree: pr.head.sha, tree: treeEntries });
+            const message = `${pr.title}${pr.body ? `\n\n${pr.body}` : ''} (#${pr.number})`;
+            const commit = await github.rest.git.createCommit({
+              owner, repo, message, tree: tree.data.sha, parents: [mainSha],
+            });
+
+            // Non-force: fails instead of clobbering if main moved since the check above.
+            await github.rest.git.updateRef({ owner, repo, ref: 'heads/main', sha: commit.data.sha });
+            await github.rest.pulls.update({ owner, repo, pull_number: prNumber, state: 'closed' });
+            core.setOutput('merged', 'true');
+            core.info(`main fast-forwarded to ${commit.data.sha.slice(0, 12)} for PR #${prNumber}`);
+
+            // A previously failed build's status comment is stale once we commit.
+            const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
+            const stale = comments.find(c => c.body?.includes('<!-- icedos-cache-build-status -->'));
+            if (stale) await github.rest.issues.deleteComment({ owner, repo, comment_id: stale.id });
+
+      # Publishes the consumer channel: key + the exact input revs the cache was built
+      # against. PR path publishes only after a real merge; repair dispatches sync main.
+      - name: Publish cache channel
+        if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || steps.merge.outputs.merged == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const branch = 'cache';
+
+            const files = ['nix-public.pem', 'flake.lock', 'state/tracked-inputs.json'];
+            const blobs = [];
+            for (const path of files) {
+              const sha = (await github.rest.git.createBlob({
+                owner, repo, content: fs.readFileSync(path, 'utf8'), encoding: 'utf-8',
+              })).data.sha;
+              // Branch layout is flat; only the tracked-inputs file changes name.
+              blobs.push({ path: path === 'state/tracked-inputs.json' ? 'tracked-inputs.json' : path, mode: '100644', type: 'blob', sha });
+            }
+
+            let headSha = null;
+            try {
+              headSha = (await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` })).data.object.sha;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+
+            if (headSha) {
+              const headCommit = (await github.rest.git.getCommit({ owner, repo, commit_sha: headSha })).data;
+              const tree = (await github.rest.git.getTree({ owner, repo, tree_sha: headCommit.tree.sha, recursive: '1' })).data;
+              const same = tree.tree.length === blobs.length &&
+                blobs.every(b => tree.tree.some(t => t.path === b.path && t.sha === b.sha));
+              if (same) {
+                core.info(`${branch}: already up to date`);
+                return;
+              }
+            }
+
+            // No base_tree + no parent: the branch is always ONE orphan commit holding
+            // exactly these files, so flake consumers never clone any history.
+            const tree = await github.rest.git.createTree({ owner, repo, tree: blobs });
+            const message = context.payload.pull_request
+              ? `publish: ${context.payload.pull_request.title}`
+              : 'publish: sync from main';
+            const commit = await github.rest.git.createCommit({
+              owner, repo, message, tree: tree.data.sha, parents: [],
+            });
+
+            if (headSha) {
+              await github.rest.git.updateRef({ owner, repo, ref: `heads/${branch}`, sha: commit.data.sha, force: true });
+            } else {
+              await github.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: commit.data.sha });
+            }
+            core.info(`${branch}: published ${commit.data.sha.slice(0, 12)}`);
+
+      - name: Report build failure on the PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const marker = '<!-- icedos-cache-build-status -->';
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            let failed = [];
+            if (fs.existsSync('build/status')) {
+              for (const f of fs.readdirSync('build/status')) {
+                if (fs.readFileSync(`build/status/${f}`, 'utf8').trim() === 'fail') failed.push(f);
+              }
+            }
+
+            // One upserted comment per PR, never a wall of retries.
+            const body = [
+              marker,
+              '❌ Build failed' + (failed.length ? ` for: ${failed.join(', ')}` : '.') + '.',
+              `Run: ${runUrl}`,
+              '',
+              'main is untouched — the PR stays open and rebuilds on the next auto-update cycle.',
+            ].join('\n');
+
+            const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
+            const existing = comments.find(c => c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            }

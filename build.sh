@@ -75,6 +75,11 @@ build_and_push() {
     top_path=""
     if [ -n "${ATTIC_TOKEN:-}" ] && [ -n "${ICEDOS_SUBSTITUTER:-}" ] && [ -z "${ICEDOS_FORCE_BUILD:-}" ]; then
       if TMPDIR="$out" nix run path:.#icedos -- --genflake-only; then
+        # Write the resolved lock: the skip check eval reads it, and CI pins the built
+        # input hashes from build/locks (gitignored).
+        nix --extra-experimental-features "nix-command flakes" flake lock "$work/build/.state"
+        mkdir -p "$root/build/locks"
+        cp "$work/build/.state/flake.lock" "$root/build/locks/$name.lock"
         eval_err="$root/build/$name.eval.err"
         top_path=$(nix eval --raw --no-write-lock-file \
           --extra-experimental-features "nix-command flakes pipe-operators" \
@@ -112,6 +117,10 @@ build_and_push() {
       exit 1
     }
     result="$(readlink "${results[0]}")"
+
+    # Refresh the persisted lock: the build may have resolved newer revs.
+    nix --extra-experimental-features "nix-command flakes" flake lock "$work/build/.state"
+    cp "$work/build/.state/flake.lock" "$root/build/locks/$name.lock"
 
     echo "pushing $cfg..."
 
