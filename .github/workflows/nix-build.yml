@@ -177,17 +177,22 @@ jobs:
               fs.writeFileSync('state/tracked-inputs.json', content);
             }
 
-            const tree = await github.rest.git.createTree({ owner, repo, base_tree: pr.head.sha, tree: treeEntries });
-            const message = `${pr.title}${pr.body ? `\n\n${pr.body}` : ''}`;
-            const commit = await github.rest.git.createCommit({
-              owner, repo, message, tree: tree.data.sha, parents: [mainSha],
-            });
-            await github.rest.git.updateRef({ owner, repo, ref: `heads/${pr.head.ref}`, sha: commit.data.sha, force: true });
+            // Nothing to fold: the branch already matches what was built — merge it as-is.
+            let shaToMerge = pr.head.sha;
+            if (treeEntries.length > 0) {
+              const tree = await github.rest.git.createTree({ owner, repo, base_tree: pr.head.sha, tree: treeEntries });
+              const message = `${pr.title}${pr.body ? `\n\n${pr.body}` : ''}`;
+              const commit = await github.rest.git.createCommit({
+                owner, repo, message, tree: tree.data.sha, parents: [mainSha],
+              });
+              await github.rest.git.updateRef({ owner, repo, ref: `heads/${pr.head.ref}`, sha: commit.data.sha, force: true });
+              shaToMerge = commit.data.sha;
+            }
 
             try {
               await github.rest.pulls.merge({
                 owner, repo, pull_number: prNumber,
-                sha: commit.data.sha,
+                sha: shaToMerge,
                 merge_method: 'rebase',
               });
             } catch (e) {
@@ -196,7 +201,7 @@ jobs:
               return;
             }
             core.setOutput('merged', 'true');
-            core.info(`merged PR #${prNumber} into main (${commit.data.sha.slice(0, 12)})`);
+            core.info(`merged PR #${prNumber} into main (${shaToMerge.slice(0, 12)})`);
 
             // A previously failed build's status comment is stale once we merge.
             const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
@@ -277,6 +282,11 @@ jobs:
               for (const f of fs.readdirSync('build/status')) {
                 if (fs.readFileSync(`build/status/${f}`, 'utf8').trim() === 'fail') failed.push(f);
               }
+            }
+            // Build passed but a later step (merge/publish) crashed: no comment needed.
+            if (failed.length === 0) {
+              core.warning('no config failed; skipping failure comment');
+              return;
             }
 
             // One upserted comment per PR, never a wall of retries.
