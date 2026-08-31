@@ -197,7 +197,7 @@ jobs:
                   print(' '.join(t['configs']))
                   break
           PYEOF
-)
+                  )
                   if [ -n "$cfgs" ]; then
                     echo "ICEDOS_BUILD_CONFIGS=$cfgs" >>"$GITHUB_ENV"
                   fi
