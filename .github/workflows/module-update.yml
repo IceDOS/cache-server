@@ -1,0 +1,217 @@
+name: Module Update
+
+# Shared updater for module repos: detects an upstream pin change, opens/refreshes
+# one PR per module (never a direct push to main), and dispatches cache-server's
+# nix-build in external mode. cache-server builds every config against the PR head
+# and rebase-merges the PR natively on success; on failure the PR stays open with
+# one status comment. An open PR is re-dispatched on every cycle even without a
+# new pin: a green rebuild is cheap (cache-hit skip) and completes a merge that a
+# moved main had deferred.
+
+on:
+  workflow_call:
+    inputs:
+      module:
+        description: "Module name: branch update/<module>, title update(<module>): ..."
+        type: string
+        required: true
+      paths:
+        description: "Space-separated paths this module owns (diff detection + commit)"
+        type: string
+        required: true
+      command:
+        description: "Update command (sources core/lib/update-lib.sh)"
+        type: string
+        required: true
+      version-file:
+        description: "Optional json file whose version field feeds the old -> new title"
+        type: string
+        default: ''
+      version-jq:
+        description: "jq filter for the version field"
+        type: string
+        default: '.version'
+      title-command:
+        description: "Optional shell snippet printing a custom title suffix"
+        type: string
+        default: ''
+
+permissions: {}
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: module-update-${{ inputs.module }}
+      cancel-in-progress: false
+    steps:
+      # main is ruleset-protected, and github-actions[bot] holds no repository role,
+      # so the App is the bypass actor: checkout credentials, branch push, PR upsert
+      # and the cache-server dispatch all run on its token.
+      - name: Mint app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.DISPATCH_APP_ID }}
+          private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
+          owner: IceDOS
+          repositories: |
+            ${{ github.event.repository.name }}
+            cache-server
+          permission-contents: write
+          permission-pull-requests: write
+          permission-actions: write
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      # update.sh sources core/lib/update-lib.sh. CI only checks out this repo, so core
+      # is fetched alongside it; the script falls back to a sibling checkout when run
+      # from a local IceDOS tree, so .icedos-core never exists outside CI.
+      - uses: actions/checkout@v4
+        with:
+          repository: IceDOS/core
+          path: .icedos-core
+
+      - uses: nixbuild/nix-quick-install-action@v30
+        with:
+          nix_conf: |
+            experimental-features = nix-command flakes
+            nix-path = nixpkgs=channel:nixos-unstable
+
+      - name: Read current version
+        id: before
+        if: inputs.version-file != ''
+        run: echo "version=$(jq -r '${{ inputs.version-jq }}' '${{ inputs.version-file }}' 2>/dev/null || true)" >>"$GITHUB_OUTPUT"
+
+      - name: Run update script
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ${{ inputs.command }}
+
+      - name: Commit update on top of latest main
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git status --porcelain -- ${{ inputs.paths }} | grep -q .; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            echo "nothing to do"
+            exit 0
+          fi
+
+          # Title: custom snippet wins, else old -> new from version-file.
+          suffix=""
+          if [ -n "$TITLE_CMD" ]; then
+            suffix=$(eval "$TITLE_CMD")
+          elif [ -n "$VERSION_FILE" ]; then
+            old="${{ steps.before.outputs.version }}"
+            new=$(jq -r "$VERSION_JQ" "$VERSION_FILE")
+            suffix="${old:+$old -> }$new"
+          fi
+          msg="update(${{ inputs.module }})${suffix:+: $suffix}"
+          echo "title=$msg" >>"$GITHUB_OUTPUT"
+
+          # The event checkout may be behind (a sibling updater landed after the
+          # schedule fired). Each module owns disjoint paths, so this rebase cannot
+          # conflict; a conflict means something unexpected and must stop the run.
+          git fetch --unshallow origin main 2>/dev/null || git fetch origin main
+          git add -- ${{ inputs.paths }}
+          git commit -m "$msg"
+          git rebase origin/main
+
+          # Identical content on top of the same main commit: the open PR already
+          # covers it, and another force-push would re-queue a build for nothing.
+          if git fetch origin "refs/heads/update/${{ inputs.module }}" 2>/dev/null; then
+            existing_tree=$(git rev-parse "FETCH_HEAD^{tree}")
+            existing_parent=$(git rev-parse "FETCH_HEAD^")
+            if [ "$existing_tree" = "$(git rev-parse HEAD^{tree})" ] && [ "$existing_parent" = "$(git rev-parse origin/main)" ]; then
+              echo "update/${{ inputs.module }}: already up to date"
+              echo "head=$(git rev-parse FETCH_HEAD)" >>"$GITHUB_OUTPUT"
+              echo "title=$(git log -1 --format=%s FETCH_HEAD)" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          git push --force origin "HEAD:refs/heads/update/${{ inputs.module }}"
+          echo "head=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+        env:
+          TITLE_CMD: ${{ inputs.title-command }}
+          VERSION_FILE: ${{ inputs.version-file }}
+          VERSION_JQ: ${{ inputs.version-jq }}
+
+      # Runs even when nothing changed: an open PR from a previously failed or
+      # deferred build must be re-dispatched, otherwise it would never retry.
+      - name: Ensure module PR
+        id: pr
+        if: success()
+        uses: actions/github-script@v7
+        # Script reads CHANGED/PR_TITLE/HEAD via process.env; without this block
+        # they are undefined and every run looks like "nothing changed".
+        env:
+          CHANGED: ${{ steps.commit.outputs.changed }}
+          PR_TITLE: ${{ steps.commit.outputs.title }}
+          HEAD: ${{ steps.commit.outputs.head }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const branch = 'update/${{ inputs.module }}';
+            const headRef = `${owner}:${branch}`;
+            const changed = process.env.CHANGED === 'true';
+
+            const prs = (await github.rest.pulls.list({ owner, repo, head: headRef, state: 'all', per_page: 20 })).data;
+            let pr = prs.find(p => p.state === 'open');
+
+            if (changed) {
+              const title = process.env.PR_TITLE;
+              const body = title;
+              if (pr) {
+                if (pr.title !== title) {
+                  await github.rest.pulls.update({ owner, repo, pull_number: pr.number, title, body });
+                }
+                core.info(`update/${branch}: PR #${pr.number} refreshed`);
+              } else {
+                // Reopen a closed-but-unmerged PR; a merged one can never reopen.
+                const closed = prs.find(p => p.state === 'closed' && !p.merged_at);
+                if (closed) {
+                  await github.rest.pulls.update({ owner, repo, pull_number: closed.number, state: 'open', title, body });
+                  pr = (await github.rest.pulls.get({ owner, repo, pull_number: closed.number })).data;
+                  core.info(`update/${branch}: reopened PR #${pr.number}`);
+                } else {
+                  pr = (await github.rest.pulls.create({ owner, repo, head: headRef, base: 'main', title, body })).data;
+                  core.info(`update/${branch}: opened PR #${pr.number}`);
+                }
+              }
+              core.setOutput('number', String(pr.number));
+              core.setOutput('head', process.env.HEAD);
+            } else if (pr) {
+              // No new pin: re-dispatch the open PR so a failed/deferred build retries.
+              core.setOutput('number', String(pr.number));
+              core.setOutput('head', pr.head.sha);
+            }
+
+      - name: Dispatch cache-server external build
+        if: steps.pr.outputs.number != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: 'IceDOS',
+              repo: 'cache-server',
+              workflow_id: 'nix-build.yml',
+              ref: 'main',
+              inputs: {
+                'source-repo': context.repo.repo,
+                'source-pr': process.env.PR_NUMBER,
+                'source-head': process.env.PR_HEAD,
+              },
+            });
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_HEAD: ${{ steps.pr.outputs.head }}
