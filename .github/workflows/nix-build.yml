@@ -219,7 +219,7 @@ jobs:
             [ -n "$m" ] || continue
             target="config/90-ext-${{ inputs.source-repo }}-$m.toml"
             if curl -fsSL --retry 3 -o "$target" \
-                "https://raw.githubusercontent.com/IceDOS/${{ inputs.source-repo }}/${{ inputs.source-head }}/cache/$m.toml"; then
+                "https://raw.githubusercontent.com/IceDOS/${{ inputs.source-repo }}/${{ inputs.source-head }}/modules/$m/build.toml"; then
               sed -i "s|url = \"github:icedos/${{ inputs.source-repo }}\"|url = \"github:icedos/${{ inputs.source-repo }}/${{ inputs.source-head }}\"|" "$target"
               staged="$staged 90-ext-${{ inputs.source-repo }}-$m.toml"
             else
