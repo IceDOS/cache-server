@@ -395,11 +395,13 @@ jobs:
               return;
             }
 
-            // Base moved: this build validated an outdated main. auto-update re-forks
-            // the branch onto the new main and the build re-runs there.
+            // Base moved: this build validated an outdated main. Trigger the
+            // re-fork now (auto-update's upsert is idempotent) instead of
+            // idling until the next hourly cycle.
             const mainSha = (await github.rest.git.getRef({ owner, repo, ref: 'heads/main' })).data.object.sha;
             if (pr.base.sha !== mainSha) {
-              core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}); skipping merge`);
+              core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}); dispatching auto-update to re-fork`);
+              core.setOutput('refork', 'true');
               return;
             }
 
@@ -452,8 +454,9 @@ jobs:
               // Rebase merges disabled on the repo would silently block every
               // future merge — surface it instead of deferring forever.
               if (e.status === 405) throw e;
-              // main moved between the guard and the merge; auto-update re-forks.
+              // main moved between the guard and the merge; re-fork now too.
               core.warning(`merge failed: ${e.message}`);
+              core.setOutput('refork', 'true');
               return;
             }
             core.setOutput('merged', 'true');
@@ -463,6 +466,23 @@ jobs:
             const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
             const stale = comments.find(c => c.body?.includes('<!-- icedos-cache-build-status -->'));
             if (stale) await github.rest.issues.deleteComment({ owner, repo, comment_id: stale.id });
+
+      # A deferred merge (main moved under the PR) re-forks the branch onto the
+      # new main right away via auto-update's idempotent upsert, instead of
+      # waiting for the next hourly cycle.
+      - name: Re-fork moved input branch
+        if: always() && steps.merge.outputs.refork == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'auto-update.yml',
+              ref: 'main',
+            });
+            core.info('dispatched auto-update to re-fork the moved branch onto current main');
 
       # Publishes the consumer channel: key + the exact input revs the cache was built
       # against. PR path publishes only after a real merge; repair dispatches sync main.
