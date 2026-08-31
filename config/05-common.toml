@@ -29,6 +29,12 @@ modules = [
   "jovian",
 ]
 
+[[icedos.repositories]]
+url = "github:icedos/tweaks"
+modules = [
+  "dmem",
+]
+
 [icedos.applications.steam.headless-session]
 colorManagement = true
 hdr = true

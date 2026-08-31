@@ -1,5 +1,12 @@
 name: Auto Update flake.lock
 
+# PRs, never direct commits: each change source (nixpkgs bump, each tracked input) gets
+# its own branch + PR. nix-build.yml builds the PR, pushes to the cache, and merges into
+# main only on success, so main always describes a fully cached state.
+#
+# Branch handling is idempotent: identical content on top of the same main commit is a
+# no-op, so a 30-min run with nothing new never re-queues a build.
+
 on:
   schedule:
     # GitHub may delay or skip scheduled runs, and they only fire on the default branch.
@@ -45,6 +52,7 @@ jobs:
         run: |
           changed_input_names=()
           changed_input_details=()
+          revs_json='{}'
 
           while IFS= read -r name; do
             configs_json=$(TRACKED_NAME="$name" python3 -c "
@@ -72,38 +80,15 @@ jobs:
               ) || { rm -rf "$work"; continue; }
 
               if [ -f "$work/build/.state/flake.lock" ]; then
-                new_rev=""
-                # A tracked input is the bare LEAF node (`nodes.<name>`) inside its module's
-                # sub-flake. Exact match wins; the endswith fallback handles legacy locks.
-                # A `follows` input is an array we cannot resolve to a revision, so skip it
-                # instead of reading the sub-root's rev. `select(. != null)` keeps a miss
-                # from leaking the literal "null".
-                lookup='
-                  [ .nodes | to_entries[] | select(.key == $name) | .key ][0] as $exact
-                  | [ .nodes | to_entries[] | select(.key | endswith("-" + $name)) | .key ][0] as $sub
-                  | (if $exact != null then $exact else $sub end) as $key
-                  | if $key == null then null
-                    else (.nodes[$key].inputs[$name]?) as $entry
-                      | if ($entry | type) == "string" then $entry
-                        elif ($entry | type) != "array" then $key
-                        else null
-                        end
-                    end
-                  | select(. != null)
-                '
-                input_key=$(jq -r --arg name "$name" "$lookup" "$work/build/.state/flake.lock")
-
-                if [ -n "$input_key" ]; then
-                  new_rev=$(jq -r --arg k "$input_key" '.nodes[$k].locked.rev // .nodes[$k].original.rev // ""' "$work/build/.state/flake.lock")
-                  if [ -z "$new_rev" ]; then
-                    echo "warning: found input '$name' at node '$input_key' but it has no revision" >&2
-                  fi
-                else
-                  echo "warning: could not locate tracked input '$name' in build/.state/flake.lock" >&2
-                fi
+                # Shared resolution logic (leaf-node lookup, follows skip) lives in
+                # scripts/tracked-revs.py — nix-build.yml reuses it to pin built revs.
+                resolved=$(python3 scripts/tracked-revs.py extract --lock "$work/build/.state/flake.lock" --names "$name")
+                input_key=$(jq -r --arg n "$name" '.[$n].key // ""' <<<"$resolved")
+                new_rev=$(jq -r --arg n "$name" '.[$n].rev // ""' <<<"$resolved")
 
                 if [ -n "$new_rev" ]; then
-                  old_rev=$(jq -r --arg k "$input_key" '.[$k] // ""' state/tracked-inputs.json 2>/dev/null)
+                  # The working file stays pristine; it is read, never mutated.
+                  old_rev=$(jq -r --arg k "$input_key" 'if (.[$k] | type) == "object" then .[$k].rev else (.[$k] // "") end' state/tracked-inputs.json 2>/dev/null)
 
                   if [ "$new_rev" != "$old_rev" ]; then
                     changed_input_names+=("$name")
@@ -112,9 +97,10 @@ jobs:
                     else
                       changed_input_details+=("$name: ${new_rev:0:12}")
                     fi
-                    jq --arg k "$input_key" --arg v "$new_rev" '.[$k] = $v' \
-                      state/tracked-inputs.json > state/tracked-inputs.tmp && \
-                      mv state/tracked-inputs.tmp state/tracked-inputs.json
+                    # Keyed by name: an input with several configs keeps only its latest rev.
+                    if [ -n "$old_rev" ]; then old_json="\"$old_rev\""; else old_json=null; fi
+                    revs_json=$(jq -c --arg n "$name" --arg k "$input_key" --arg r "$new_rev" --argjson o "$old_json" \
+                      '. + {($n): {name:$n, key:$k, rev:$r, old:$o}}' <<<"$revs_json")
                   fi
                 fi
               fi
@@ -131,11 +117,15 @@ jobs:
 
           if [ ${#changed_input_names[@]} -gt 0 ]; then
             echo "changed=true" >>"$GITHUB_OUTPUT"
-            echo "names=$(IFS=,; echo "${changed_input_names[*]}")" >>"$GITHUB_OUTPUT"
             {
               echo "details<<DETAILS_EOF"
               printf '%s\n' "${changed_input_details[@]}"
               echo "DETAILS_EOF"
+            } >>"$GITHUB_OUTPUT"
+            {
+              echo "revs<<REVS_EOF"
+              echo "$revs_json"
+              echo "REVS_EOF"
             } >>"$GITHUB_OUTPUT"
           else
             echo "changed=false" >>"$GITHUB_OUTPUT"
@@ -151,81 +141,111 @@ jobs:
           owner: IceDOS
           repositories: cache-server
 
-      - name: Commit and push via API
-        id: commit
+      - name: Upsert update branches and pull requests
         if: steps.update.outputs.changed == 'true' || steps.inputs.outputs.changed == 'true'
         uses: actions/github-script@v7
+        env:
+          REVS: ${{ steps.inputs.outputs.revs }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const fs = require('fs');
             const { owner, repo } = context.repo;
+            const fs = require('fs');
 
-            function truncate(s) { return s.length <= 72 ? s : s.slice(0, 69) + '...'; }
+            const mainSha = (await github.rest.git.getRef({ owner, repo, ref: 'heads/main' })).data.object.sha;
 
-            const nixChanged = '${{ steps.update.outputs.changed }}' === 'true';
-            const inputsChanged = '${{ steps.inputs.outputs.changed }}' === 'true';
-            let subject, body = '';
-
-            if (nixChanged && !inputsChanged) {
-              subject = `update(nixpkgs): ${{ steps.update.outputs.old }} -> ${{ steps.update.outputs.short }}`;
-            } else if (inputsChanged && !nixChanged) {
-              subject = truncate(`update(inputs): ${{ steps.inputs.outputs.names }}`);
-              body = `${{ steps.inputs.outputs.details }}`;
-            } else {
-              subject = 'update: nixpkgs, inputs';
-              body = `nixpkgs: ${{ steps.update.outputs.old }} -> ${{ steps.update.outputs.short }}\n${{ steps.inputs.outputs.details }}`;
+            async function blobShaOf(content) {
+              return (await github.rest.git.createBlob({ owner, repo, content, encoding: 'utf-8' })).data.sha;
             }
 
-            const commitMessage = body ? `${subject}\n\n${body}` : subject;
+            // Branch head/parent plus the blob sha of `path` at head, or null when absent.
+            async function branchState(branch, path) {
+              try {
+                const ref = await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+                const commit = await github.rest.git.getCommit({ owner, repo, commit_sha: ref.data.object.sha });
+                let blob = null;
+                try {
+                  const file = await github.rest.repos.getContent({ owner, repo, path, ref: `heads/${branch}` });
+                  if (!Array.isArray(file.data)) blob = file.data.sha;
+                } catch (e) {
+                  if (e.status !== 404) throw e;
+                }
+                return { head: ref.data.object.sha, parent: commit.data.parents[0]?.sha, blob };
+              } catch (e) {
+                if (e.status === 404) return null;
+                throw e;
+              }
+            }
 
-            const ref = await github.rest.git.getRef({ owner, repo, ref: 'heads/main' });
-            const currentSha = ref.data.object.sha;
+            async function upsert({ branch, path, content, message, title, body }) {
+              const blobSha = await blobShaOf(content);
+              const cur = await branchState(branch, path);
 
-            const flakeLock = fs.readFileSync('flake.lock', 'utf8');
-            const trackedInputs = fs.readFileSync('state/tracked-inputs.json', 'utf8');
+              // Identical content on top of the same main commit: the open PR already
+              // triggers a build, and another force-push would re-queue it for nothing.
+              if (cur && cur.blob === blobSha && cur.parent === mainSha) {
+                core.info(`${branch}: already up to date`);
+                return;
+              }
 
-            const [b1, b2] = await Promise.all([
-              github.rest.git.createBlob({ owner, repo, content: flakeLock, encoding: 'utf-8' }),
-              github.rest.git.createBlob({ owner, repo, content: trackedInputs, encoding: 'utf-8' }),
-            ]);
+              const tree = await github.rest.git.createTree({
+                owner, repo, base_tree: mainSha,
+                tree: [{ path, mode: '100644', type: 'blob', sha: blobSha }],
+              });
+              const commit = await github.rest.git.createCommit({
+                owner, repo, message, tree: tree.data.sha, parents: [mainSha],
+              });
 
-            const tree = await github.rest.git.createTree({
-              owner, repo,
-              base_tree: currentSha,
-              tree: [
-                { path: 'flake.lock', mode: '100644', type: 'blob', sha: b1.data.sha },
-                { path: 'state/tracked-inputs.json', mode: '100644', type: 'blob', sha: b2.data.sha },
-              ],
-            });
+              if (cur) {
+                await github.rest.git.updateRef({ owner, repo, ref: `heads/${branch}`, sha: commit.data.sha, force: true });
+              } else {
+                await github.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: commit.data.sha });
+              }
 
-            const commit = await github.rest.git.createCommit({
-              owner, repo,
-              message: commitMessage,
-              tree: tree.data.sha,
-              parents: [currentSha],
-            });
+              const head = `${owner}:${branch}`;
+              const prs = (await github.rest.pulls.list({ owner, repo, head, state: 'all', per_page: 20 })).data;
+              const open = prs.find(p => p.state === 'open');
+              if (open) {
+                if (open.title !== title || open.body !== body) {
+                  await github.rest.pulls.update({ owner, repo, pull_number: open.number, title, body });
+                }
+                core.info(`${branch}: PR #${open.number} refreshed`);
+              } else {
+                // Reopen a closed-but-unmerged PR; a merged one can never reopen.
+                const closed = prs.find(p => p.state === 'closed' && !p.merged_at);
+                if (closed) {
+                  await github.rest.pulls.update({ owner, repo, pull_number: closed.number, state: 'open', title, body });
+                  core.info(`${branch}: reopened PR #${closed.number}`);
+                } else {
+                  const pr = await github.rest.pulls.create({ owner, repo, head, base: 'main', title, body });
+                  core.info(`${branch}: opened PR #${pr.data.number}`);
+                }
+              }
+            }
 
-            // No force: only ever fast-forward, so a commit that lands between the
-            // getRef above and this push is never clobbered (the step fails instead).
-            await github.rest.git.updateRef({
-              owner, repo,
-              ref: 'heads/main',
-              sha: commit.data.sha,
-            });
+            if ('${{ steps.update.outputs.changed }}' === 'true') {
+              const old = '${{ steps.update.outputs.old }}';
+              const short = '${{ steps.update.outputs.short }}';
+              await upsert({
+                branch: 'update/nixpkgs',
+                path: 'flake.lock',
+                content: fs.readFileSync('flake.lock', 'utf8'),
+                message: `update(nixpkgs): ${old} -> ${short}`,
+                title: `update(nixpkgs): ${old} -> ${short}`,
+                body: `nixpkgs: ${old} -> ${short}`,
+              });
+            }
 
-            core.info(`Committed: ${subject}`);
-            core.setOutput('sha', commit.data.sha);
-
-      - name: Trigger build
-        if: steps.commit.outcome == 'success'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'nix-build.yml',
-              ref: 'main',
-            });
+            const base = JSON.parse(fs.readFileSync('state/tracked-inputs.json', 'utf8'));
+            for (const r of Object.values(JSON.parse(process.env.REVS || '{}'))) {
+              // Spread-copy per input: each PR must carry only its own rev change.
+              const detail = r.old ? `${r.name}: ${r.old.slice(0, 12)} -> ${r.rev.slice(0, 12)}` : `${r.name}: ${r.rev.slice(0, 12)}`;
+              await upsert({
+                branch: `update/input-${r.name}`,
+                path: 'state/tracked-inputs.json',
+                content: JSON.stringify({ ...base, [r.key]: r.rev }, null, 2) + '\n',
+                message: `update(inputs): ${r.name}\n\n${detail}`,
+                title: `update(inputs): ${r.name}`,
+                body: detail,
+              });
+            }
