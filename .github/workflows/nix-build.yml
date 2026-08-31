@@ -217,14 +217,18 @@ jobs:
           # the tracked-inputs narrowing below.
           curl -sf --retry 3 -H "Authorization: Bearer $GT" \
             "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/git/trees/${{ inputs.source-head }}?recursive=1" \
-            | jq -r '.tree[] | select(.path | endswith("/build.toml")) | .path' >build-tomls.txt || true
+            | jq -r '.tree[] | select(.path | test("(^|/)build(-[^/]+)?\\.toml$")) | .path' >build-tomls.txt || true
 
+          # The filename suffix names the variant: build.toml -> <pkg>,
+          # build-rc.toml -> <pkg>-rc — so variants stage as distinct configs.
           staged=''
           while read -r bt; do
             [ -n "$bt" ] || continue
             dir=$(dirname "$bt")
             grep -q "^$dir/" changed-files.txt || continue
-            name=$(basename "$dir")
+            fname=$(basename "$bt")
+            variant=${fname#build}; variant=${variant%.toml}
+            name=$(basename "$dir")$variant
             target="config/90-ext-${{ inputs.source-repo }}-$name.toml"
             if curl -fsSL --retry 3 -o "$target" \
                 "https://raw.githubusercontent.com/IceDOS/${{ inputs.source-repo }}/${{ inputs.source-head }}/$bt"; then
