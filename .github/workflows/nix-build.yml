@@ -1,4 +1,12 @@
 name: Nix Build
+run-name: >-
+  ${{
+    github.event_name == 'pull_request' && github.event.pull_request.title
+    || inputs.source-repo != ''
+    && format('gate: {0}#{1}', inputs.source-repo, inputs.source-pr)
+    || github.event_name == 'workflow_dispatch' && 'cache rebuild'
+    || 'Nix Build'
+  }}
 
 # PRs are the only way updates reach main: auto-update.yml opens one PR per change
 # source, this workflow builds and pushes it, and the merge step below runs only after
