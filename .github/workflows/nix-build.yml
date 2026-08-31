@@ -398,7 +398,10 @@ jobs:
                 merge_method: 'rebase',
               });
             } catch (e) {
-              // main moved or rebase merges disabled; auto-update re-forks and rebuilds.
+              // Rebase merges disabled on the repo would silently block every
+              // future merge — surface it instead of deferring forever.
+              if (e.status === 405) throw e;
+              // main moved between the guard and the merge; auto-update re-forks.
               core.warning(`merge failed: ${e.message}`);
               return;
             }
@@ -586,7 +589,10 @@ jobs:
             try {
               await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, sha: headSha, merge_method: 'rebase' });
             } catch (e) {
-              // main moved or rebase merges disabled; the updater re-forks next cycle.
+              // Rebase merges disabled on the source repo would silently block
+              // every future merge — surface it instead of deferring forever.
+              if (e.status === 405) throw e;
+              // main moved between the guard and the merge; the updater re-forks.
               core.warning(`merge failed: ${e.message}`);
               return;
             }
