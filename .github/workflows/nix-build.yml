@@ -190,7 +190,10 @@ jobs:
             pull_request)
               # Internal PRs advance exactly what they are about.
               case "$HEAD_REF" in
-                update/nixpkgs) unpin='nixpkgs home-manager' ;;
+                # A nixpkgs bump also rides the module repos along: their packages
+                # (patches included) are evaluated against the machine's nixpkgs,
+                # so a bump can invalidate repo content (e.g. gamescope patches).
+                update/nixpkgs) unpin='nixpkgs home-manager icedos-github_icedos_apps icedos-github_icedos_hardware icedos-github_icedos_kde icedos-github_icedos_providers icedos-github_icedos_tweaks' ;;
                 update/input-*)
                   unpin="$HEAD_REF" && unpin="${unpin#update/input-}"
                   # Narrow the build to the configs this input can affect
