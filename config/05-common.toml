@@ -3,36 +3,17 @@ url = "github:icedos/apps"
 fetchDependencies = false
 modules = [
   "ambiled",
-  "bb-launcher",
-  "nx-optimizer",
   "prefixer",
-  "prime-agent",
-  "reigntweak",
   "sekirofpsunlock",
-  "spotube",
   "steam",
   "steam-sunshine-headless-session",
   "sunshine",
-  "unshade",
-]
-
-[[icedos.repositories]]
-url = "github:icedos/hardware"
-fetchDependencies = false
-modules = [
-  "low-latency-vulkan-layer",
 ]
 
 [[icedos.repositories]]
 url = "github:icedos/providers"
 modules = [
   "jovian",
-]
-
-[[icedos.repositories]]
-url = "github:icedos/tweaks"
-modules = [
-  "dmem",
 ]
 
 [icedos.applications.steam.headless-session]
