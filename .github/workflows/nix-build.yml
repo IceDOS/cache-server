@@ -208,6 +208,30 @@ jobs:
             "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/pulls/${{ inputs.source-pr }}/files?per_page=100" \
             | jq -r '.[].filename' | grep -oE '^modules/[^/]+' \
             | xargs -n1 basename >changed-modules.txt || true
+
+          # Prefer the repo's own minimal build configs: cache/<module>.toml at
+          # the PR head, staged with the repo pinned to it — one toml per
+          # package, owned by the repo, so cache-server never lists modules it
+          # doesn't use. Modules without one fall back to the tracked-inputs
+          # narrowing below.
+          staged=''
+          while read -r m; do
+            [ -n "$m" ] || continue
+            target="config/90-ext-${{ inputs.source-repo }}-$m.toml"
+            if curl -fsSL --retry 3 -o "$target" \
+                "https://raw.githubusercontent.com/IceDOS/${{ inputs.source-repo }}/${{ inputs.source-head }}/cache/$m.toml"; then
+              sed -i "s|url = \"github:icedos/${{ inputs.source-repo }}\"|url = \"github:icedos/${{ inputs.source-repo }}/${{ inputs.source-head }}\"|" "$target"
+              staged="$staged 90-ext-${{ inputs.source-repo }}-$m.toml"
+            else
+              rm -f "$target"
+            fi
+          done < changed-modules.txt
+          if [ -n "$staged" ]; then
+            echo "ICEDOS_BUILD_CONFIGS=$staged" >>"$GITHUB_ENV"
+            git diff --stat -- config/
+            exit 0
+          fi
+
           python3 - <<'PYEOF'
           import glob, os, tomllib
 
