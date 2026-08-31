@@ -1,3 +1,16 @@
+# "icedos" is the core repo's node key in the generated state lock; the
+# root's icedos-core input only follows it, so it resolves no revision.
+[[trackedInputs]]
+name = "icedos"
+configs = [
+  "00-base.toml",
+  "05-common.toml",
+  "10-cuda.toml",
+  "20-rocm.toml",
+  "40-kde.toml",
+  "50-cachyos-kernel-v3.toml",
+]
+
 [[trackedInputs]]
 name = "nix-cachyos-kernel"
 configs = ["50-cachyos-kernel-v3.toml"]
@@ -17,3 +30,23 @@ configs = ["40-kde.toml"]
 [[trackedInputs]]
 name = "jovian"
 configs = ["05-common.toml"]
+
+[[trackedInputs]]
+name = "icedos-github_icedos_apps"
+configs = ["00-base.toml", "05-common.toml"]
+
+[[trackedInputs]]
+name = "icedos-github_icedos_hardware"
+configs = ["00-base.toml", "10-cuda.toml", "20-rocm.toml", "50-cachyos-kernel-v3.toml"]
+
+[[trackedInputs]]
+name = "icedos-github_icedos_kde"
+configs = ["40-kde.toml"]
+
+[[trackedInputs]]
+name = "icedos-github_icedos_providers"
+configs = ["05-common.toml"]
+
+[[trackedInputs]]
+name = "icedos-github_icedos_tweaks"
+configs = ["40-kde.toml"]
