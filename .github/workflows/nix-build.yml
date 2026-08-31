@@ -47,6 +47,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 concurrency:
   group: ${{ github.workflow }}
@@ -595,3 +596,21 @@ jobs:
             const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
             const stale = comments.find(c => c.body?.includes('<!-- icedos-cache-build-status -->'));
             if (stale) await github.rest.issues.deleteComment({ owner, repo, comment_id: stale.id });
+      - name: Report failure
+        if: failure() && github.event_name != 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const label = 'ci-failure';
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = `**${context.workflow}** failed on \`${context.ref}\` (${context.eventName}) at ${new Date().toISOString()}\n${runUrl}\ncc @IceDBorn`;
+            const existing = (await github.rest.issues.listForRepo({ owner, repo, labels: label, state: 'open', per_page: 1 })).data;
+            if (existing.length) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: existing[0].number, body });
+              core.info(`reported on #${existing[0].number}`);
+            } else {
+              await github.rest.issues.create({ owner, repo, title: 'CI failure reports', body, labels: [label] });
+              core.info('created the rolling failure-report issue');
+            }
