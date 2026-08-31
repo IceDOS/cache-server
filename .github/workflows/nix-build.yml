@@ -2,8 +2,10 @@ name: Nix Build
 run-name: >-
   ${{
     github.event_name == 'pull_request' && github.event.pull_request.title
-    || inputs.source-repo != ''
+    || inputs.source-repo != '' && inputs.source-pr != ''
     && format('gate: {0}#{1}', inputs.source-repo, inputs.source-pr)
+    || inputs.source-repo != ''
+    && format('warm: {0} packages against current nixpkgs', inputs.source-repo)
     || github.event_name == 'workflow_dispatch' && 'cache rebuild'
     || 'Nix Build'
   }}
@@ -56,6 +58,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write
 
 concurrency:
   group: ${{ github.workflow }}
@@ -167,9 +170,14 @@ jobs:
 
           # Per-config seeds: the exact lock each config was last built with
           # (the root state.lock only covers whichever config published last).
-          aws s3 cp "s3://icedos-nix-cache-fyi/locks/" seed-locks/ --recursive \
-            >/dev/null 2>&1 || echo 'no per-config locks uploaded yet' >&2
-          echo "ICEDOS_SEED_DIR=$PWD/seed-locks" >>"$GITHUB_ENV"
+          # External/warm runs skip them — a staged config's stale per-config
+          # lock would pin the OLD nixpkgs; the state.lock published by the
+          # last full run is the machine-consistent resolution.
+          if [ -z '${{ inputs.source-repo }}' ]; then
+            aws s3 cp "s3://icedos-nix-cache-fyi/locks/" seed-locks/ --recursive \
+              >/dev/null 2>&1 || echo 'no per-config locks uploaded yet' >&2
+            echo "ICEDOS_SEED_DIR=$PWD/seed-locks" >>"$GITHUB_ENV"
+          fi
 
           unpin=''
           case '${{ github.event_name }}' in
@@ -226,16 +234,25 @@ jobs:
       # relying on transitive pulls keep the default true and stay pinned. Falls
       # back to repo-wide when the PR touches no modules/ path.
       - name: Pin source repo PR head in configs
+        id: pin
         if: inputs.source-repo != ''
         env:
           GT: ${{ steps.source-token.outputs.token }}
         run: |
           match='url = "github:icedos/${{ inputs.source-repo }}"'
-          curl -sf --retry 3 -H "Authorization: Bearer $GT" \
-            "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/pulls/${{ inputs.source-pr }}/files?per_page=100" \
-            | jq -r '.[].filename' >changed-files.txt || true
-          grep -oE '^modules/[^/]+' changed-files.txt \
-            | xargs -n1 basename >changed-modules.txt || true
+          if [ -n '${{ inputs.source-pr }}' ]; then
+            curl -sf --retry 3 -H "Authorization: Bearer $GT" \
+              "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/pulls/${{ inputs.source-pr }}/files?per_page=100" \
+              | jq -r '.[].filename' >changed-files.txt || true
+            grep -oE '^modules/[^/]+' changed-files.txt \
+              | xargs -n1 basename >changed-modules.txt || true
+          else
+            # Warm mode (no PR): rebuild every build.toml in the repo — used
+            # after nixpkgs bumps, since module repos evaluate against the
+            # machine's nixpkgs and every package path changes with it.
+            : >changed-files.txt
+            : >changed-modules.txt
+          fi
 
           # Prefer the repo's own minimal build configs: any */build.toml at the
           # PR head whose package dir contains changed files — staged with the
@@ -252,7 +269,9 @@ jobs:
           while read -r bt; do
             [ -n "$bt" ] || continue
             dir=$(dirname "$bt")
-            grep -q "^$dir/" changed-files.txt || continue
+            if [ -s changed-files.txt ]; then
+              grep -q "^$dir/" changed-files.txt || continue
+            fi
             fname=$(basename "$bt")
             variant=${fname#build}; variant=${variant%.toml}
             name=$(basename "$dir")$variant
@@ -268,6 +287,11 @@ jobs:
           if [ -n "$staged" ]; then
             echo "ICEDOS_BUILD_CONFIGS=$staged" >>"$GITHUB_ENV"
             git diff --stat -- config/
+            exit 0
+          fi
+          if [ -z '${{ inputs.source-pr }}' ]; then
+            echo 'warm mode: no build.tomls in the repo; nothing to warm'
+            echo "noop=true" >>"$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -299,6 +323,7 @@ jobs:
           rm build-pin-files.txt changed-files.txt changed-modules.txt build-tomls.txt
           git diff --stat -- config/
       - name: Run Nix Build
+        if: steps.pin.outputs.noop != 'true'
         run: nix run .#build
         env:
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
@@ -543,7 +568,7 @@ jobs:
       # its "next cycle" is the updater's next schedule run (it re-dispatches any
       # open PR, so a transient failure retries automatically).
       - name: Report build failure on the source PR
-        if: failure() && inputs.source-repo != ''
+        if: failure() && inputs.source-repo != '' && inputs.source-pr != ''
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.post-source-token.outputs.token }}
@@ -587,7 +612,7 @@ jobs:
       # head, so a green run means the module repo's main can advance. Same guards:
       # a moved head/base defers to the updater's next cycle, which re-forks.
       - name: Merge source PR after successful build
-        if: inputs.source-repo != ''
+        if: inputs.source-repo != '' && inputs.source-pr != ''
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.post-source-token.outputs.token }}
@@ -628,6 +653,23 @@ jobs:
             const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
             const stale = comments.find(c => c.body?.includes('<!-- icedos-cache-build-status -->'));
             if (stale) await github.rest.issues.deleteComment({ owner, repo, comment_id: stale.id });
+      # A nixpkgs bump changes every module repo's package paths (module repos
+      # evaluate against the machine's nixpkgs), so their package caches must
+      # be rebuilt against the just-published seed. Warm runs carry no PR:
+      # they stage every build.toml in the repo and push, never merging.
+      - name: Warm module repo packages after nixpkgs bump
+        if: steps.merge.outputs.merged == 'true' && github.head_ref == 'update/nixpkgs'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repos=$(tr -d '[:space:]' <state/module-repos | grep -v '^$' || true)
+          for repo in $repos; do
+            head=$(curl -fsSL "https://api.github.com/repos/IceDOS/$repo/commits/main" | jq -r .sha)
+            gh workflow run nix-build.yml --ref main \
+              -f source-repo="$repo" -f source-head="$head" -f source-pr=
+            echo "dispatched warm run for $repo @$head"
+          done
+
       - name: Report failure
         if: failure() && github.event_name != 'pull_request'
         uses: actions/github-script@v7
