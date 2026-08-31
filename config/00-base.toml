@@ -1,6 +1,0 @@
-[[icedos.repositories]]
-url = "github:icedos/hardware"
-fetchDependencies = false
-
-[icedos.system]
-version = "26.05"
