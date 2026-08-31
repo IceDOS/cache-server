@@ -57,9 +57,10 @@ trap clean_workbase EXIT
 max_parallel="${ICEDOS_MAX_PARALLEL:-6}"
 
 # ICEDOS_BUILD_CONFIGS (external mode): space-separated basenames of the configs
-# affected by the source repo, derived by nix-build.yml. force overrides the
-# subset; without it everything outside the subset is untouched and stays
-# covered by the cache.
+# affected by the source repo, derived by nix-build.yml. The base warm-up always
+# runs: it seeds BASE_LOCK with the pinned rev and realizes the shared closure.
+# force overrides the subset; without it everything outside the subset is
+# untouched and stays covered by the cache.
 selected=()
 if [ -n "${ICEDOS_BUILD_CONFIGS:-}" ] && [ -z "${ICEDOS_FORCE_BUILD:-}" ]; then
   for name in $ICEDOS_BUILD_CONFIGS; do
@@ -143,6 +144,12 @@ build_and_push() {
       apply_unpin "$work/build/.state/flake.lock"
     fi
 
+    # Seed the base build's resolved lock so this build only resolves its OWN repos; nix
+    # adds the missing ones in-memory (--no-update-lock-file doesn't block additions).
+    if [ -n "${BASE_LOCK:-}" ] && [ -f "${BASE_LOCK:-}" ] && [ "$cfg" != "$base" ]; then
+      mkdir -p "$work/build/.state"
+      cp "$BASE_LOCK" "$work/build/.state/flake.lock"
+    fi
     # Heal mode: rebuild from each config's own last-resolved lock so the copied
     # closure matches what that config actually serves its users.
     if [ -n "${ICEDOS_HEAL:-}" ] && [ -f "$root/build/locks/$name.lock" ]; then
@@ -267,9 +274,25 @@ build_and_push() {
   ) && echo ok >"$root/build/status/$name" || echo fail >"$root/build/status/$name"
 }
 
-# Fan out all configs in parallel, throttled. Subset mode skips configs outside
-# the selection.
+# Build the bare base alone first so its shared closure is realized and pushed once; the
+# parallel builds then only handle their own deltas instead of racing on a cold store.
+base="config/00-base.toml"
+BASE_LOCK=""
+if [ -f "$base" ]; then
+  echo "=== warming shared base: $base ==="
+  build_and_push "$base"
+  if [ "$(cat "$root/build/status/00-base" 2>/dev/null)" = "ok" ]; then
+    BASE_LOCK="$workbase/00-base/build/.state/flake.lock"
+  else
+    echo "WARNING: base warm-up failed; parallel builds will each resolve their own inputs" >&2
+  fi
+fi
+
+# Fan out the remaining configs in parallel against the now-warm store, throttled.
+# Subset mode skips configs outside the selection (including the base itself,
+# which the warm-up above already handled).
 for cfg in config/*.toml; do
+  [ "$cfg" = "$base" ] && continue
   in_selected "$(basename "$cfg")" || continue
   while [ "$(jobs -r | wc -l)" -ge "$max_parallel" ]; do wait -n || true; done
   build_and_push "$cfg" &
@@ -278,6 +301,7 @@ wait
 
 failed=()
 for cfg in config/*.toml; do
+  [ "$cfg" = "$base" ] && continue
   in_selected "$(basename "$cfg")" || continue
   name="$(basename "$cfg" .toml)"
   [ "$(cat "$root/build/status/$name" 2>/dev/null)" = "ok" ] || failed+=("$cfg")
@@ -291,18 +315,8 @@ fi
 
 # Expose the built state lock for the publish step: it becomes the next run's
 # seed, so the cache branch always describes what the cache was built with.
-# Staged external configs are skipped — their locks carry PR-head pins.
-state_lock=""
-for cfg in config/*.toml; do
-  name="$(basename "$cfg" .toml)"
-  case "$name" in 90-ext-*) continue ;; esac
-  if [ "$(cat "$root/build/status/$name" 2>/dev/null)" = "ok" ]; then
-    state_lock="$workbase/$name/build/.state/flake.lock"
-    break
-  fi
-done
-if [ -n "$state_lock" ] && [ -f "$state_lock" ]; then
-  cp "$state_lock" "$root/state.lock"
+if [ -n "${BASE_LOCK:-}" ] && [ -f "${BASE_LOCK:-}" ]; then
+  cp "$BASE_LOCK" "$root/state.lock"
 fi
 
 echo "All configs built successfully!"
