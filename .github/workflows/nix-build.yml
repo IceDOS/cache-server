@@ -206,26 +206,34 @@ jobs:
           match='url = "github:icedos/${{ inputs.source-repo }}"'
           curl -sf --retry 3 -H "Authorization: Bearer $GT" \
             "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/pulls/${{ inputs.source-pr }}/files?per_page=100" \
-            | jq -r '.[].filename' | grep -oE '^modules/[^/]+' \
+            | jq -r '.[].filename' >changed-files.txt || true
+          grep -oE '^modules/[^/]+' changed-files.txt \
             | xargs -n1 basename >changed-modules.txt || true
 
-          # Prefer the repo's own minimal build configs: cache/<module>.toml at
-          # the PR head, staged with the repo pinned to it — one toml per
-          # package, owned by the repo, so cache-server never lists modules it
-          # doesn't use. Modules without one fall back to the tracked-inputs
-          # narrowing below.
+          # Prefer the repo's own minimal build configs: any */build.toml at the
+          # PR head whose package dir contains changed files — staged with the
+          # repo pinned to it. Nesting-agnostic (apps: modules/<pkg>; hardware:
+          # modules/<group>/modules/<pkg>). Packages without one fall back to
+          # the tracked-inputs narrowing below.
+          curl -sf --retry 3 -H "Authorization: Bearer $GT" \
+            "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/git/trees/${{ inputs.source-head }}?recursive=1" \
+            | jq -r '.tree[] | select(.path | endswith("/build.toml")) | .path' >build-tomls.txt || true
+
           staged=''
-          while read -r m; do
-            [ -n "$m" ] || continue
-            target="config/90-ext-${{ inputs.source-repo }}-$m.toml"
+          while read -r bt; do
+            [ -n "$bt" ] || continue
+            dir=$(dirname "$bt")
+            grep -q "^$dir/" changed-files.txt || continue
+            name=$(basename "$dir")
+            target="config/90-ext-${{ inputs.source-repo }}-$name.toml"
             if curl -fsSL --retry 3 -o "$target" \
-                "https://raw.githubusercontent.com/IceDOS/${{ inputs.source-repo }}/${{ inputs.source-head }}/modules/$m/build.toml"; then
+                "https://raw.githubusercontent.com/IceDOS/${{ inputs.source-repo }}/${{ inputs.source-head }}/$bt"; then
               sed -i "s|url = \"github:icedos/${{ inputs.source-repo }}\"|url = \"github:icedos/${{ inputs.source-repo }}/${{ inputs.source-head }}\"|" "$target"
-              staged="$staged 90-ext-${{ inputs.source-repo }}-$m.toml"
+              staged="$staged 90-ext-${{ inputs.source-repo }}-$name.toml"
             else
               rm -f "$target"
             fi
-          done < changed-modules.txt
+          done < build-tomls.txt
           if [ -n "$staged" ]; then
             echo "ICEDOS_BUILD_CONFIGS=$staged" >>"$GITHUB_ENV"
             git diff --stat -- config/
@@ -257,7 +265,7 @@ jobs:
           # Only the affected configs need (re)building; derived here so the
           # mapping can never drift from the configs themselves.
           echo "ICEDOS_BUILD_CONFIGS=$(xargs -n1 basename < build-pin-files.txt | tr '\n' ' ')" >>"$GITHUB_ENV"
-          rm build-pin-files.txt changed-modules.txt
+          rm build-pin-files.txt changed-files.txt changed-modules.txt build-tomls.txt
           git diff --stat -- config/
       - name: Run Nix Build
         run: nix run .#build
