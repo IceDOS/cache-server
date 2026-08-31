@@ -183,7 +183,25 @@ jobs:
               # Internal PRs advance exactly what they are about.
               case "$HEAD_REF" in
                 update/nixpkgs) unpin='nixpkgs home-manager' ;;
-                update/input-*) unpin="$HEAD_REF" && unpin="${unpin#update/input-}" ;;
+                update/input-*)
+                  unpin="$HEAD_REF" && unpin="${unpin#update/input-}"
+                  # Narrow the build to the configs this input can affect
+                  # (tracked-inputs.toml). Unknown inputs build everything.
+                  cfgs=$(python3 - "$unpin" <<'PYEOF'
+          import sys, tomllib
+
+          name = sys.argv[1]
+          data = tomllib.load(open('tracked-inputs.toml', 'rb'))
+          for t in data.get('trackedInputs', []):
+              if t['name'] == name:
+                  print(' '.join(t['configs']))
+                  break
+          PYEOF
+)
+                  if [ -n "$cfgs" ]; then
+                    echo "ICEDOS_BUILD_CONFIGS=$cfgs" >>"$GITHUB_ENV"
+                  fi
+                  ;;
               esac
               ;;
           esac
