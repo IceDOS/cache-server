@@ -5,27 +5,48 @@ set -o pipefail
 
 root="$PWD"
 
-# Returns 0 if the store path is already in the Attic cache.
+# The CDN serves the S3 bucket; narinfo/NAR paths have no cache-name prefix.
+ICEDOS_CACHE_URL="${ICEDOS_SUBSTITUTER:-https://icedos.fyi}"
+# secret-key-files is restricted, so the untrusted CI user's copies land unsigned
+# and clients reject them. The store's secret-key param is not, and signs on write.
+ICEDOS_PUSH_URL="${ICEDOS_S3_URL:-}"
+if [ -n "${ICEDOS_SIGNING_KEY:-}" ]; then
+  printf '%s\n' "$ICEDOS_SIGNING_KEY" > "$root/nix-secret.pem"
+  chmod 600 "$root/nix-secret.pem"
+  export NIX_CONFIG="secret-key-files = $root/nix-secret.pem"
+  case "$ICEDOS_PUSH_URL" in
+    *\?*) ICEDOS_PUSH_URL="$ICEDOS_PUSH_URL&secret-key=$root/nix-secret.pem" ;;
+    ?*) ICEDOS_PUSH_URL="$ICEDOS_PUSH_URL?secret-key=$root/nix-secret.pem" ;;
+  esac
+fi
+
+ICEDOS_KEY_NAME="${ICEDOS_KEY_NAME:-$(cut -d: -f1 <"$root/nix-public.pem" 2>/dev/null || true)}"
+
+# Returns 0 if the path is cached AND signed by us: an unsigned narinfo is
+# unusable to clients, and counting it as a hit would skip the config forever.
 is_path_cached() {
   local store_path="$1"
-  # get-missing-paths wants only the 32-char hash.
   local hash="${store_path#/nix/store/}"
   hash="${hash:0:32}"
 
-  local resp
-  resp=$(curl -sf -X POST \
-    -H "Authorization: Bearer $ATTIC_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"cache\":\"icedos\",\"store_path_hashes\":[\"$hash\"]}" \
-    "$ICEDOS_SUBSTITUTER/_api/v1/get-missing-paths" 2>/dev/null) || return 1
-
-  local missing_count
-  missing_count=$(echo "$resp" | jq '.missing_paths | length')
-  [ "$missing_count" -eq 0 ]
+  local body
+  body=$(curl -sf --max-time 30 "$ICEDOS_CACHE_URL/$hash.narinfo") || return 1
+  [ -n "$body" ] || return 1
+  [ -n "${ICEDOS_KEY_NAME:-}" ] || return 0
+  printf '%s\n' "$body" | grep -q "^Sig:.*[ :]$ICEDOS_KEY_NAME:"
 }
 
 [ -d build ] && rm -rf build
 mkdir -p build/status
+
+# Health gate: a broken origin makes nix treat CI-built paths as unavailable and
+# recompile the world. Abort; the next cycle retries. 403 = missing via CloudFront+OAC.
+probe_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+  "$ICEDOS_CACHE_URL/00000000000000000000000000000000.narinfo") || probe_code=000
+case "$probe_code" in
+  200|403|404) ;;
+  *) echo "::error::cache server unhealthy (HTTP $probe_code) — aborting build so the next cycle retries against a healthy server" >&2; exit 1 ;;
+esac
 
 # The work dir is baked into the closure via `icedos.configurationLocation`, so a mktemp base
 # gives every run fresh hashes for ~38 paths per config. CI pins ICEDOS_WORKBASE instead.
@@ -44,6 +65,68 @@ trap clean_workbase EXIT
 
 max_parallel="${ICEDOS_MAX_PARALLEL:-6}"
 
+# ICEDOS_BUILD_CONFIGS (external mode): space-separated basenames of the configs
+# affected by the source repo, derived by nix-build.yml. The base warm-up always
+# runs: it seeds BASE_LOCK with the pinned rev and realizes the shared closure.
+# force overrides the subset; without it everything outside the subset is
+# untouched and stays covered by the cache.
+selected=()
+if [ -n "${ICEDOS_BUILD_CONFIGS:-}" ] && [ -z "${ICEDOS_FORCE_BUILD:-}" ]; then
+  for name in $ICEDOS_BUILD_CONFIGS; do
+    [ -f "config/$name" ] || { echo "ICEDOS_BUILD_CONFIGS: no such config: $name" >&2; exit 1; }
+    selected+=("$name")
+  done
+else
+  for cfg in config/*.toml; do
+    selected+=("$(basename "$cfg")")
+  done
+fi
+in_selected() {
+  local name="$1" s
+  for s in "${selected[@]}"; do [ "$s" = "$name" ] && return 0; done
+  return 1
+}
+
+# Apply the unpin list to the seed: nodes this run is meant to advance are
+# removed so they resolve fresh (external: the pinned source repo; internal:
+# nixpkgs/home-manager on the nixpkgs PR, the PR's leaf otherwise). Everything
+# else keeps the rev the cache was last built with.
+apply_unpin() {
+  local seed="$1"
+  [ -f "$seed" ] && [ -n "${ICEDOS_UNPIN:-}" ] || return 0
+  python3 - "$seed" $ICEDOS_UNPIN <<'PYEOF'
+import json, sys
+
+path, patterns = sys.argv[1], sys.argv[2:]
+lock = json.load(open(path))
+nodes = lock.get("nodes", {})
+
+# Same key lookup as cache-server's tracked-revs.py: exact match, else a
+# "-<name>" suffixed node key.
+targets = set()
+for name in patterns:
+    if name in nodes:
+        targets.add(name)
+    targets.update(k for k in nodes if k.endswith("-" + name))
+for k in targets:
+    nodes.pop(k, None)
+
+def strip_refs(inputs):
+    if not isinstance(inputs, dict):
+        return
+    for name, ref in list(inputs.items()):
+        if isinstance(ref, str) and ref in targets:
+            del inputs[name]
+
+for node in nodes.values():
+    strip_refs(node.get("inputs"))
+strip_refs(nodes.get("root", {}).get("inputs"))
+
+json.dump(lock, open(path, "w"), indent=2)
+print(f"unpinned {len(targets)} node(s) from the seed: {sorted(targets)}")
+PYEOF
+}
+
 # Build one config in an isolated, git-less work dir so the flake eval sees the untracked
 # config.toml. Pushes go behind a flock: the 1-core server only chunks one closure at a time.
 build_and_push() {
@@ -59,11 +142,34 @@ build_and_push() {
     rsync -a --exclude=build --exclude=.git "$root/" "$work/"
     cp "$cfg" "$work/config.toml"
 
+    # Seed per config: the exact lock this config was last built with (the root
+    # state.lock only covers whichever config published last). Placed before
+    # the base-lock seed below: the warm-up's evolved lock wins for the rest.
+    seed="$ICEDOS_SEED_DIR/$name.lock"
+    [ -f "$seed" ] || seed="${ICEDOS_SEED_LOCK:-}"
+    if [ -n "$seed" ] && [ -f "$seed" ]; then
+      mkdir -p "$work/build/.state"
+      cp "$seed" "$work/build/.state/flake.lock"
+      apply_unpin "$work/build/.state/flake.lock"
+    fi
+
     # Seed the base build's resolved lock so this build only resolves its OWN repos; nix
     # adds the missing ones in-memory (--no-update-lock-file doesn't block additions).
     if [ -n "${BASE_LOCK:-}" ] && [ -f "${BASE_LOCK:-}" ] && [ "$cfg" != "$base" ]; then
       mkdir -p "$work/build/.state"
       cp "$BASE_LOCK" "$work/build/.state/flake.lock"
+      # Re-apply the unpin AFTER the base-lock copy: the base lock carries every
+      # node already resolved (the source repo at main, not the PR head), and
+      # --no-update-lock-file keeps existing nodes as-is. Popping the source repo
+      # here forces a re-resolve from the config URL, which staging pinned to the
+      # PR head. Without this, external gates build main and merge unvalidated PRs.
+      apply_unpin "$work/build/.state/flake.lock"
+    fi
+    # Heal mode: rebuild from each config's own last-resolved lock so the copied
+    # closure matches what that config actually serves its users.
+    if [ -n "${ICEDOS_HEAL:-}" ] && [ -f "$root/build/locks/$name.lock" ]; then
+      mkdir -p "$work/build/.state"
+      cp "$root/build/locks/$name.lock" "$work/build/.state/flake.lock"
     fi
 
     mkdir -p "$out"
@@ -73,10 +179,16 @@ build_and_push() {
     # Skip when the top-level closure is already cached; genflake runs first for the pure outPath eval.
     # pipe-operators is REQUIRED — core/lib/icedos.nix uses `|>`; stderr kept so failed evals aren't silent.
     top_path=""
-    if [ -n "${ATTIC_TOKEN:-}" ] && [ -n "${ICEDOS_SUBSTITUTER:-}" ] && [ -z "${ICEDOS_FORCE_BUILD:-}" ]; then
-      if TMPDIR="$out" nix run path:.#icedos -- --genflake-only; then
+    if [ -z "${ICEDOS_HEAL:-}" ] && [ -n "${ICEDOS_CACHE_URL:-}" ] && [ -z "${ICEDOS_FORCE_BUILD:-}" ]; then
+      # Evals are silent — a stalled fetch here hangs the whole fan-out, so bound them.
+      if timeout 15m env TMPDIR="$out" nix run path:.#icedos -- --genflake-only; then
+        # Write the resolved lock: the skip check eval reads it, and CI pins the built
+        # input hashes from build/locks (gitignored).
+        timeout 10m nix --extra-experimental-features "nix-command flakes" flake lock "$work/build/.state"
+        mkdir -p "$root/build/locks"
+        cp "$work/build/.state/flake.lock" "$root/build/locks/$name.lock"
         eval_err="$root/build/$name.eval.err"
-        top_path=$(nix eval --raw --no-write-lock-file \
+        top_path=$(timeout 10m nix eval --raw --no-write-lock-file \
           --extra-experimental-features "nix-command flakes pipe-operators" \
           "path:$work/build/.state#nixosConfigurations.icedos.config.system.build.toplevel.outPath" \
           2>"$eval_err") || {
@@ -99,7 +211,7 @@ build_and_push() {
       --nh-args --no-nom \
       --build-args \
       -L \
-      --extra-substituters "$ICEDOS_SUBSTITUTER/icedos?priority=100" \
+      --extra-substituters "$ICEDOS_CACHE_URL?priority=100" \
       --extra-trusted-public-keys "$(cat nix-public.pem)" \
       --extra-substituters "https://attic.xuyh0120.win/lantian?priority=90" \
       --extra-trusted-public-keys "lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc="
@@ -113,22 +225,73 @@ build_and_push() {
     }
     result="$(readlink "${results[0]}")"
 
+    # Refresh the persisted lock: the build may have resolved newer revs.
+    timeout 10m nix --extra-experimental-features "nix-command flakes" flake lock "$work/build/.state"
+    cp "$work/build/.state/flake.lock" "$root/build/locks/$name.lock"
+
     echo "pushing $cfg..."
 
-    # `attic push` exits 0 even when individual paths fail, and the skip check above would
-    # then make the gap permanent. Retry on attic's own ❌ verdict, not get-missing-paths.
+    # Upstream filter: skip paths cache.nixos.org already serves — users prefer
+    # it (priority 40 < 100), so pushing them is pure waste of upload + storage.
+    mapfile -t closure_paths < <(nix path-info -r "$result")
+    missing_paths=()
+    printf '%s\n' "${closure_paths[@]}" | xargs -P 8 -I{} bash -c '
+      h=$(basename "{}" | cut -c1-32)
+      code=000
+      for i in 1 2 3; do
+        code=$(curl -s -o /dev/null -w "%{http_code}" --head --max-time 20 "https://cache.nixos.org/$h.narinfo")
+        [ "$code" = 000 ] || break
+        sleep $((i * 2))
+      done
+      # a failed probe is not proof of absence; pushing beats permanent skip
+      [ "$code" = 200 ] || printf "%s\n" "{}"
+    ' >"$out/missing-paths" || true
+    mapfile -t missing_paths < "$out/missing-paths"
+    echo "$cfg: $((${#closure_paths[@]} - ${#missing_paths[@]})) paths in upstream, pushing ${#missing_paths[@]}"
+
+    # `nix copy` exits non-zero on any path failure, which would make the skip
+    # check above permanent. Retry on failure.
     pushed=0
     for attempt in 1 2 3; do
       push_rc=0
-      push_out="$(flock "$root/build/push.lock" attic push icedos "$result" 2>&1)" || push_rc=$?
-      printf '%s\n' "$push_out"
-
-      if [ "$push_rc" -eq 0 ] && ! printf '%s' "$push_out" | grep -q '❌'; then
+      if [ "${#missing_paths[@]}" -eq 0 ]; then
+        push_out="$cfg: nothing to push — entire closure already in upstream caches"
+        printf '%s\n' "$push_out"
         pushed=1
         break
       fi
+      push_out="$(flock "$root/build/push.lock" timeout 30m \
+        nix copy --to "$ICEDOS_PUSH_URL" ${missing_paths[@]+"${missing_paths[@]}"} 2>&1)" || push_rc=$?
+      printf '%s\n' "$push_out"
 
-      echo "$cfg: push attempt $attempt reported failed paths (rc=$push_rc), retrying" >&2
+      if [ "$push_rc" -eq 0 ]; then
+        pushed=1
+        # nix copy skips paths already in the bucket, so unsigned ones from earlier
+        # runs never get a signature on the way in. Re-signing is a no-op if signed.
+        if [ -n "${ICEDOS_SIGNING_KEY:-}" ] && [ "${#missing_paths[@]}" -gt 0 ]; then
+          flock "$root/build/push.lock" nix store sign \
+            --store "$ICEDOS_S3_URL" --key-file "$root/nix-secret.pem" \
+            ${missing_paths[@]+"${missing_paths[@]}"} || {
+            echo "$cfg: signing failed; clients would reject these paths" >&2
+            push_rc=1
+            pushed=0
+            echo "$cfg: sign attempt $attempt failed, retrying" >&2
+            sleep $((attempt * 15))
+            continue
+          }
+        fi
+        # Persist the config's resolved lock so the weekly heal job can restore
+        # exactly this closure if the lifecycle rule expires any of its paths.
+        # nix copy never writes nix-cache-info to S3; nix drops the substituter without it
+        printf 'StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 100\n' \
+          | aws s3 cp - "s3://$ICEDOS_S3_BUCKET/nix-cache-info" --region "$AWS_REGION" >/dev/null 2>&1 || \
+          echo "warning: failed to upload nix-cache-info" >&2
+        aws s3 cp "$root/build/locks/$name.lock" "s3://$ICEDOS_S3_BUCKET/locks/$name.lock" --region "$AWS_REGION" >/dev/null 2>&1 || \
+          echo "$cfg: warning — could not upload the config lock" >&2
+        break
+      fi
+
+      echo "$cfg: push attempt $attempt failed (rc=$push_rc), retrying" >&2
       sleep $((attempt * 15))
     done
     [ "$pushed" -eq 1 ] || {
@@ -155,8 +318,11 @@ if [ -f "$base" ]; then
 fi
 
 # Fan out the remaining configs in parallel against the now-warm store, throttled.
+# Subset mode skips configs outside the selection (including the base itself,
+# which the warm-up above already handled).
 for cfg in config/*.toml; do
   [ "$cfg" = "$base" ] && continue
+  in_selected "$(basename "$cfg")" || continue
   while [ "$(jobs -r | wc -l)" -ge "$max_parallel" ]; do wait -n || true; done
   build_and_push "$cfg" &
 done
@@ -165,6 +331,7 @@ wait
 failed=()
 for cfg in config/*.toml; do
   [ "$cfg" = "$base" ] && continue
+  in_selected "$(basename "$cfg")" || continue
   name="$(basename "$cfg" .toml)"
   [ "$(cat "$root/build/status/$name" 2>/dev/null)" = "ok" ] || failed+=("$cfg")
 done
@@ -173,6 +340,12 @@ if [ "${#failed[@]}" -gt 0 ]; then
   echo "Build/upload failed for ${#failed[@]} config(s):" >/dev/stderr
   printf '  %s\n' "${failed[@]}" >/dev/stderr
   exit 1
+fi
+
+# Expose the built state lock for the publish step: it becomes the next run's
+# seed, so the cache branch always describes what the cache was built with.
+if [ -n "${BASE_LOCK:-}" ] && [ -f "${BASE_LOCK:-}" ]; then
+  cp "$BASE_LOCK" "$root/state.lock"
 fi
 
 echo "All configs built successfully!"

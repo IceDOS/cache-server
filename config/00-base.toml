@@ -1,3 +1,9 @@
+# Warm-up build: realizes the shared base closure once and locks the repos
+# several configs depend on, so parallel builds seed from one consistent lock.
+[[icedos.repositories]]
+url = "github:icedos/apps"
+fetchDependencies = false
+
 [[icedos.repositories]]
 url = "github:icedos/hardware"
 fetchDependencies = false
