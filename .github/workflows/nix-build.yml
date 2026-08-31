@@ -1,10 +1,31 @@
 name: Nix Build
+run-name: >-
+  ${{
+    github.event_name == 'pull_request' && github.event.pull_request.title
+    || inputs.source-repo != '' && inputs.source-pr != ''
+    && format('gate: {0}#{1}', inputs.source-repo, inputs.source-pr)
+    || inputs.source-repo != ''
+    && format('warm: {0} packages against current nixpkgs', inputs.source-repo)
+    || github.event_name == 'workflow_dispatch' && 'cache rebuild'
+    || 'Nix Build'
+  }}
 
-# Dispatch-only: auto-update.yml after a lock bump, and the mesa / shadps4 updaters in
-# hardware / apps. A push trigger would double-build on top of those dispatches.
+# PRs are the only way updates reach main: auto-update.yml opens one PR per change
+# source, this workflow builds and pushes it, and the merge step below runs only after
+# every config is in the cache. A push trigger would double-build on top of that.
 #
-# `force` repairs the cache: a config with a present toplevel but an incomplete closure
-# would otherwise be skipped forever.
+# The merge carries the input revs the build ACTUALLY resolved (detection and build
+# resolve at different times): the branch is rewritten as one commit holding them, then
+# rebase-merged — one run, one commit, native Merged state. workflow_dispatch on main is
+# the repair path: `force` rebuilds a config whose toplevel is present but whose closure
+# is incomplete (it would otherwise be skipped forever).
+#
+# External mode (source-repo/source-pr/source-head): validates a module repo's PR by
+# pinning its head in every config, then rebase-merges that PR on success. This is what
+# gates module repo mains (apps/hardware/tweaks) behind a green build.
+#
+# Concurrency is a single global queue: builds share the runner store cache, and a
+# cancel would kill an in-progress kernel compile.
 on:
   workflow_dispatch:
     inputs:
@@ -12,20 +33,51 @@ on:
         description: "Rebuild and re-push every config even if its closure is already cached"
         type: boolean
         default: false
+      # External mode: a module repo's updater opened a PR; this run validates its
+      # head against every config and merges the PR natively on success.
+      source-repo:
+        description: "Module repo whose PR this run validates (e.g. apps)"
+        type: string
+        default: ''
+      source-pr:
+        description: "PR number in the source repo"
+        type: string
+        default: ''
+      source-head:
+        description: "PR head sha being validated"
+        type: string
+        default: '' 
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - flake.lock
+      - config/**
+      - state/tracked-inputs.json
 
 permissions:
+  contents: write
+  pull-requests: write
+  issues: write
   actions: write
 
 concurrency:
-  # Queue instead of cancelling — a cancel kills an in-progress kernel compile.
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # A wedged runner<->server transfer can hang the build step with no output;
+    # bound the whole job so the queue self-heals instead of waiting on a human.
+    # Multi-GB closures substitute from the cache at ~600-700 KB/s uplink —
+    # big configs legitimately need hours; the bound only catches true hangs.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Build exactly the PR head: a rebase merge then makes main identical to what
+          # was built. Falls back to the default ref for workflow_dispatch.
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
       # Reclaim /mnt for a large /nix store (runner / is ~17 GB). MUST precede the Nix install.
       # nix-permission-edict hands the runner user /nix so the cache restore can write into it.
       - uses: wimpysworld/nothing-but-nix@v10
@@ -56,27 +108,33 @@ jobs:
           purge-prefixes: nix-${{ runner.os }}-
           purge-created: 0
           purge-primary-key: never
-      - name: Attic login
-        run: |
-          nix profile install nixpkgs#attic-client
-          attic login icedos "$ICEDOS_SUBSTITUTER" "$ATTIC_TOKEN"
-          attic cache info icedos
+      - name: Install AWS CLI
+        run: nix profile install nixpkgs#awscli2
         env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
-          ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      # Uploaded before any build so the substituter answers from the very
+      # first config instead of only after the first push.
+      - name: Publish nix-cache-info
+        run: |
+          printf 'StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 100\n' \
+            | aws s3 cp - "s3://icedos-nix-cache-fyi/nix-cache-info" --region eu-central-1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-central-1
+          AWS_DEFAULT_REGION: eu-central-1
       - name: Test cache server
         run: |
-          # A POST bypasses the nginx GET cache and validates the token (401 on bad).
-          echo "Probing atticd API via $ICEDOS_SUBSTITUTER ..."
-          curl --fail --silent --show-error --retry 3 --retry-delay 5 \
-            -X POST \
-            -H "Authorization: Bearer $ATTIC_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{"cache":"icedos","store_path_hashes":["00000000000000000000000000000000"]}' \
-            -w "\nHTTP %{http_code}\n" \
-            "$ICEDOS_SUBSTITUTER/_api/v1/get-missing-paths"
+          # A missing path must answer 403/404 through CloudFront + Cloudflare.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+            "$ICEDOS_SUBSTITUTER/00000000000000000000000000000000.narinfo") || code=000
+          echo "cache probe: HTTP $code"
+          case "$code" in
+            200|403|404) ;;
+            *) echo "::error::cache unhealthy (HTTP $code)"; exit 1 ;;
+          esac
         env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
       # Stable, NOT mktemp: the work dir is baked into the closure, so a random path
       # re-hashes ~38 paths per config. On /mnt because builds inherit TMPDIR from here.
@@ -84,10 +142,572 @@ jobs:
         run: |
           sudo mkdir -p /mnt/icedos-work
           sudo chmod 1777 /mnt/icedos-work
+      # Minted before the build (not after) so the failure step still has a token.
+      - name: Mint app token
+        id: app-token
+        if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.DISPATCH_APP_ID }}
+          private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
+          owner: IceDOS
+          repositories: cache-server
+      # Seed every build from the cache branch's state.lock: the pin set the cache
+      # was last built with. Ungated branch refs (nixpkgs, home-manager) therefore
+      # resolve at their cached revs instead of drifting between runs, and cache
+      # hits stay stable. What this run is meant to advance gets unpinned.
+      - name: Download build seed from the cache branch
+        if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if curl -fsSL --retry 3 -o seed.lock \
+              'https://raw.githubusercontent.com/IceDOS/cache-server/cache/state.lock'; then
+            echo "ICEDOS_SEED_LOCK=$PWD/seed.lock" >>"$GITHUB_ENV"
+          else
+            echo 'no state.lock on the cache branch yet; building unseeded' >&2
+          fi
+
+          # Per-config seeds: the exact lock each config was last built with
+          # (the root state.lock only covers whichever config published last).
+          # External/warm runs skip them — a staged config's stale per-config
+          # lock would pin the OLD nixpkgs; the state.lock published by the
+          # last full run is the machine-consistent resolution.
+          if [ -z '${{ inputs.source-repo }}' ]; then
+            aws s3 cp "s3://icedos-nix-cache-fyi/locks/" seed-locks/ --recursive \
+              >/dev/null 2>&1 || echo 'no per-config locks uploaded yet' >&2
+            echo "ICEDOS_SEED_DIR=$PWD/seed-locks" >>"$GITHUB_ENV"
+          fi
+
+          unpin=''
+          case '${{ github.event_name }}' in
+            workflow_dispatch)
+              # External mode: only the source repo's PR head may move.
+              if [ -n '${{ inputs.source-repo }}' ]; then
+                unpin='icedos-github_icedos_${{ inputs.source-repo }}'
+              fi
+              ;;
+            pull_request)
+              # Internal PRs advance exactly what they are about.
+              case "$HEAD_REF" in
+                # A nixpkgs bump also rides the module repos along: their packages
+                # (patches included) are evaluated against the machine's nixpkgs,
+                # so a bump can invalidate repo content (e.g. gamescope patches).
+                update/nixpkgs) unpin='nixpkgs home-manager icedos-github_icedos_apps icedos-github_icedos_hardware icedos-github_icedos_kde icedos-github_icedos_providers icedos-github_icedos_tweaks' ;;
+                update/input-*)
+                  unpin="$HEAD_REF" && unpin="${unpin#update/input-}"
+                  # Narrow the build to the configs this input can affect
+                  # (tracked-inputs.toml). Unknown inputs build everything.
+                  cfgs=$(python3 - "$unpin" <<'PYEOF'
+          import sys, tomllib
+
+          name = sys.argv[1]
+          data = tomllib.load(open('tracked-inputs.toml', 'rb'))
+          for t in data.get('trackedInputs', []):
+              if t['name'] == name:
+                  print(' '.join(t['configs']))
+                  break
+          PYEOF
+                  )
+                  if [ -n "$cfgs" ]; then
+                    echo "ICEDOS_BUILD_CONFIGS=$cfgs" >>"$GITHUB_ENV"
+                  fi
+                  ;;
+              esac
+              ;;
+          esac
+          # a frozen channel node pins the stale pem into every future seed
+          unpin="$unpin cache-server"
+          echo "ICEDOS_UNPIN=$unpin" >>"$GITHUB_ENV"
+      # External mode needs write access to the module repo whose PR is validated.
+      - name: Mint source repo token
+        id: source-token
+        if: always() && inputs.source-repo != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.DISPATCH_APP_ID }}
+          private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
+          owner: IceDOS
+          repositories: ${{ inputs.source-repo }}
+          permission-contents: write
+          permission-pull-requests: write
+      # External mode: pin the module repo to the PR head. Narrowed to configs
+      # that list a module the PR touched — a config with fetchDependencies =
+      # false declares its module list exhaustive, so narrowing is safe; configs
+      # relying on transitive pulls keep the default true and stay pinned. Falls
+      # back to repo-wide when the PR touches no modules/ path.
+      - name: Pin source repo PR head in configs
+        id: pin
+        if: inputs.source-repo != ''
+        env:
+          GT: ${{ steps.source-token.outputs.token }}
+        run: |
+          match='url = "github:icedos/${{ inputs.source-repo }}"'
+          if [ -n '${{ inputs.source-pr }}' ]; then
+            curl -sf --retry 3 -H "Authorization: Bearer $GT" \
+              "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/pulls/${{ inputs.source-pr }}/files?per_page=100" \
+              | jq -r '.[].filename' >changed-files.txt || true
+            grep -oE '^modules/[^/]+' changed-files.txt \
+              | xargs -n1 basename >changed-modules.txt || true
+          else
+            # Warm mode (no PR): rebuild every build.toml in the repo — used
+            # after nixpkgs bumps, since module repos evaluate against the
+            # machine's nixpkgs and every package path changes with it.
+            : >changed-files.txt
+            : >changed-modules.txt
+          fi
+
+          # Prefer the repo's own minimal build configs: any */build.toml at the
+          # PR head whose package dir contains changed files — staged with the
+          # repo pinned to it. Nesting-agnostic (apps: modules/<pkg>; hardware:
+          # modules/<group>/modules/<pkg>). Packages without one fall back to
+          # the tracked-inputs narrowing below.
+          curl -sf --retry 3 -H "Authorization: Bearer $GT" \
+            "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/git/trees/${{ inputs.source-head }}?recursive=1" \
+            | jq -r '.tree[] | select(.path | test("(^|/)build(-[^/]+)?\\.toml$")) | .path' >build-tomls.txt || true
+
+          # The filename suffix names the variant: build.toml -> <pkg>,
+          # build-rc.toml -> <pkg>-rc — so variants stage as distinct configs.
+          staged=''
+          while read -r bt; do
+            [ -n "$bt" ] || continue
+            dir=$(dirname "$bt")
+            if [ -s changed-files.txt ]; then
+              grep -q "^$dir/" changed-files.txt || continue
+            fi
+            fname=$(basename "$bt")
+            variant=${fname#build}; variant=${variant%.toml}
+            name=$(basename "$dir")$variant
+            target="config/90-ext-${{ inputs.source-repo }}-$name.toml"
+            if curl -fsSL --retry 3 -o "$target" \
+                "https://raw.githubusercontent.com/IceDOS/${{ inputs.source-repo }}/${{ inputs.source-head }}/$bt"; then
+              sed -i "s|url = \"github:icedos/${{ inputs.source-repo }}\"|url = \"github:icedos/${{ inputs.source-repo }}/${{ inputs.source-head }}\"|" "$target"
+              staged="$staged 90-ext-${{ inputs.source-repo }}-$name.toml"
+            else
+              rm -f "$target"
+            fi
+          done < build-tomls.txt
+          if [ -n "$staged" ]; then
+            echo "ICEDOS_BUILD_CONFIGS=$staged" >>"$GITHUB_ENV"
+            git diff --stat -- config/
+            exit 0
+          fi
+          if [ -z '${{ inputs.source-pr }}' ]; then
+            echo 'warm mode: no build.tomls in the repo; nothing to warm'
+            echo "noop=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          python3 - <<'PYEOF'
+          import glob, os, tomllib
+
+          repo_url = 'github:icedos/${{ inputs.source-repo }}'
+          changed = {m for m in open('changed-modules.txt').read().split()}
+          pins = []
+          for cfg in sorted(glob.glob('config/*.toml')):
+              data = tomllib.load(open(cfg, 'rb'))
+              for repo in data.get('icedos', {}).get('repositories') or []:
+                  if repo_url not in repo.get('url', ''):
+                      continue
+                  mods = set(repo.get('modules') or [])
+                  if not changed or (mods & changed) or repo.get('fetchDependencies', True):
+                      pins.append(cfg)
+                      break
+          open('build-pin-files.txt', 'w').write(''.join(f'{p}\n' for p in pins))
+          print('pinning:', pins)
+          PYEOF
+          [ -s build-pin-files.txt ] || { echo "source repo not referenced by any config" >&2; exit 1; }
+          while read -r f; do
+            sed -i "s|$match|url = \"github:icedos/${{ inputs.source-repo }}/${{ inputs.source-head }}\"|" "$f"
+          done < build-pin-files.txt
+          # Only the affected configs need (re)building; derived here so the
+          # mapping can never drift from the configs themselves.
+          echo "ICEDOS_BUILD_CONFIGS=$(xargs -n1 basename < build-pin-files.txt | tr '\n' ' ')" >>"$GITHUB_ENV"
+          rm build-pin-files.txt changed-files.txt changed-modules.txt build-tomls.txt
+          git diff --stat -- config/
       - name: Run Nix Build
+        if: steps.pin.outputs.noop != 'true'
         run: nix run .#build
         env:
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ICEDOS_SIGNING_KEY: ${{ secrets.ICEDOS_SIGNING_KEY }}
+          ICEDOS_S3_URL: "s3://icedos-nix-cache-fyi?region=eu-central-1"
+          ICEDOS_S3_BUCKET: icedos-nix-cache-fyi
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-central-1
+          AWS_DEFAULT_REGION: eu-central-1
           ICEDOS_WORKBASE: /mnt/icedos-work
           ICEDOS_FORCE_BUILD: ${{ inputs.force && '1' || '' }}
+
+      # App installation tokens expire after 1h; long builds outlive them, so
+      # every post-build step re-mints here.
+      - name: Mint post-build app token
+        id: post-app-token
+        if: always() && steps.app-token.conclusion == 'success'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.DISPATCH_APP_ID }}
+          private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
+          owner: IceDOS
+          repositories: cache-server
+      - name: Mint post-build source repo token
+        id: post-source-token
+        if: always() && inputs.source-repo != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.DISPATCH_APP_ID }}
+          private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
+          owner: IceDOS
+          repositories: ${{ inputs.source-repo }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Extract built input hashes
+        id: hashes
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/tracked-revs.py diff \
+            --toml tracked-inputs.toml \
+            --locks-dir build/locks \
+            --base state/tracked-inputs.json >build/built-revs.json
+          cat build/built-revs.json
+
+      # pulls.merge commits the PR head as-is, so the branch is first rewritten as a
+      # single commit on top of main with the built revs folded in; rebase merge then
+      # lands exactly that commit. Needs "allow rebase merges" on the repo.
+      - name: Merge PR after successful build
+        id: merge
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.post-app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
+
+            if (pr.state !== 'open') {
+              core.info(`PR #${prNumber} is ${pr.state}; nothing to merge`);
+              return;
+            }
+
+            // Head moved while this run sat in the build queue; the newer run owns it.
+            if (pr.head.sha !== context.payload.pull_request.head.sha) {
+              core.warning('head moved since this build started; skipping merge');
+              return;
+            }
+
+            // Base moved: this build validated an outdated main. Trigger the
+            // re-fork now (auto-update's upsert is idempotent) instead of
+            // idling until the next hourly cycle.
+            const mainSha = (await github.rest.git.getRef({ owner, repo, ref: 'heads/main' })).data.object.sha;
+            if (pr.base.sha !== mainSha) {
+              core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}); dispatching auto-update to re-fork`);
+              core.setOutput('refork', 'true');
+              return;
+            }
+
+            // Fold the revs the build actually resolved into the bookkeeping file; a
+            // build-only change, so the cached closures still match main exactly.
+            const built = JSON.parse(fs.readFileSync('build/built-revs.json', 'utf8'));
+            let treeEntries = [];
+            if (Object.keys(built).length > 0) {
+              const file = JSON.parse(fs.readFileSync('state/tracked-inputs.json', 'utf8'));
+              // Fold only the input this PR advances: bystander revs the build
+              // resolved fresh (seeds don't cover every config) would leapfrog
+              // other open PRs and make them stale.
+              const own = (/^update\/input-(.+)$/.exec(pr.head.ref) || [])[1];
+              const entries = Object.values(built).filter((r) => own && r.name === own);
+              // {rev, repo} lets consumers guard the name match against the host repo.
+              for (const r of entries) file[r.key] = { rev: r.rev, repo: r.repo || '' };
+              const content = JSON.stringify(file, null, 2) + '\n';
+              const blob = (await github.rest.git.createBlob({ owner, repo, content, encoding: 'utf-8' })).data.sha;
+              treeEntries = [{ path: 'state/tracked-inputs.json', mode: '100644', type: 'blob', sha: blob }];
+              // The publish step reads the workspace copy after this step.
+              fs.writeFileSync('state/tracked-inputs.json', content);
+            }
+
+            // Nothing to fold: the branch already matches what was built — merge it as-is.
+            let shaToMerge = pr.head.sha;
+            if (treeEntries.length > 0) {
+              const tree = await github.rest.git.createTree({ owner, repo, base_tree: pr.head.sha, tree: treeEntries });
+              const headTree = (await github.rest.repos.getCommit({ owner, repo, ref: pr.head.sha })).data.commit.tree.sha;
+              if (tree.data.sha === headTree) {
+                // Identical content: pushing would fire a synchronize event and loop
+                // the build queue forever — merge the branch as-is.
+                core.info('fold matches the branch tree; nothing to push');
+              } else {
+                const message = `${pr.title}${pr.body ? `\n\n${pr.body}` : ''}`;
+                const commit = await github.rest.git.createCommit({
+                  owner, repo, message, tree: tree.data.sha, parents: [mainSha],
+                });
+                await github.rest.git.updateRef({ owner, repo, ref: `heads/${pr.head.ref}`, sha: commit.data.sha, force: true });
+                shaToMerge = commit.data.sha;
+              }
+            }
+
+            try {
+              await github.rest.pulls.merge({
+                owner, repo, pull_number: prNumber,
+                sha: shaToMerge,
+                merge_method: 'rebase',
+              });
+            } catch (e) {
+              // Rebase merges disabled on the repo would silently block every
+              // future merge — surface it instead of deferring forever.
+              if (e.status === 405) throw e;
+              // main moved between the guard and the merge; re-fork now too.
+              core.warning(`merge failed: ${e.message}`);
+              core.setOutput('refork', 'true');
+              return;
+            }
+            core.setOutput('merged', 'true');
+            core.info(`merged PR #${prNumber} into main (${shaToMerge.slice(0, 12)})`);
+
+            // A previously failed build's status comment is stale once we merge.
+            const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
+            const stale = comments.find(c => c.body?.includes('<!-- icedos-cache-build-status -->'));
+            if (stale) await github.rest.issues.deleteComment({ owner, repo, comment_id: stale.id });
+
+      # A deferred merge (main moved under the PR) re-forks the branch onto the
+      # new main right away via auto-update's idempotent upsert, instead of
+      # waiting for the next hourly cycle.
+      - name: Re-fork moved input branch
+        if: always() && steps.merge.outputs.refork == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'auto-update.yml',
+              ref: 'main',
+            });
+            core.info('dispatched auto-update to re-fork the moved branch onto current main');
+
+      # Publishes the consumer channel: key + the exact input revs the cache was built
+      # against. PR path publishes only after a real merge; repair dispatches sync main.
+      - name: Publish cache channel
+        if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || steps.merge.outputs.merged == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.post-app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const branch = 'cache';
+
+            const files = ['nix-public.pem', 'flake.lock', 'state/tracked-inputs.json'];
+            // The built state lock seeds the next run's build (cache-branch pins).
+            if (fs.existsSync('state.lock')) files.push('state.lock');
+            const blobs = [];
+            for (const path of files) {
+              const sha = (await github.rest.git.createBlob({
+                owner, repo, content: fs.readFileSync(path, 'utf8'), encoding: 'utf-8',
+              })).data.sha;
+              // Branch layout is flat; only the tracked-inputs file changes name.
+              blobs.push({ path: path === 'state/tracked-inputs.json' ? 'tracked-inputs.json' : path, mode: '100644', type: 'blob', sha });
+            }
+
+            let headSha = null;
+            try {
+              headSha = (await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` })).data.object.sha;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+
+            if (headSha) {
+              const headCommit = (await github.rest.git.getCommit({ owner, repo, commit_sha: headSha })).data;
+              const tree = (await github.rest.git.getTree({ owner, repo, tree_sha: headCommit.tree.sha, recursive: '1' })).data;
+              const same = tree.tree.length === blobs.length &&
+                blobs.every(b => tree.tree.some(t => t.path === b.path && t.sha === b.sha));
+              if (same) {
+                core.info(`${branch}: already up to date`);
+                return;
+              }
+            }
+
+            // No base_tree + no parent: the branch is always ONE orphan commit holding
+            // exactly these files, so flake consumers never clone any history.
+            const tree = await github.rest.git.createTree({ owner, repo, tree: blobs });
+            const message = context.payload.pull_request
+              ? `publish: ${context.payload.pull_request.title}`
+              : 'publish: sync from main';
+            const commit = await github.rest.git.createCommit({
+              owner, repo, message, tree: tree.data.sha, parents: [],
+            });
+
+            if (headSha) {
+              await github.rest.git.updateRef({ owner, repo, ref: `heads/${branch}`, sha: commit.data.sha, force: true });
+            } else {
+              await github.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: commit.data.sha });
+            }
+            core.info(`${branch}: published ${commit.data.sha.slice(0, 12)}`);
+
+      - name: Report build failure on the PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.post-app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const marker = '<!-- icedos-cache-build-status -->';
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            let failed = [];
+            if (fs.existsSync('build/status')) {
+              for (const f of fs.readdirSync('build/status')) {
+                if (fs.readFileSync(`build/status/${f}`, 'utf8').trim() === 'fail') failed.push(f);
+              }
+            }
+            // Build passed but a later step (merge/publish) crashed: no comment needed.
+            if (failed.length === 0) {
+              core.warning('no config failed; skipping failure comment');
+              return;
+            }
+
+            // One upserted comment per PR, never a wall of retries.
+            const body = [
+              marker,
+              '❌ Build failed' + (failed.length ? ` for: ${failed.join(', ')}` : '.') + '.',
+              `Run: ${runUrl}`,
+              '',
+              'main is untouched — the PR stays open and rebuilds on the next auto-update cycle.',
+            ].join('\n');
+
+            const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
+            const existing = comments.find(c => c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            }
+
+      # External mode twin of the step above: the PR lives in the module repo, and
+      # its "next cycle" is the updater's next schedule run (it re-dispatches any
+      # open PR, so a transient failure retries automatically).
+      - name: Report build failure on the source PR
+        if: failure() && inputs.source-repo != '' && inputs.source-pr != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.post-source-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = '${{ inputs.source-repo }}';
+            const prNumber = Number('${{ inputs.source-pr }}');
+            const marker = '<!-- icedos-cache-build-status -->';
+            const runUrl = `https://github.com/${context.repo.owner}/cache-server/actions/runs/${context.runId}`;
+
+            let failed = [];
+            if (fs.existsSync('build/status')) {
+              for (const f of fs.readdirSync('build/status')) {
+                if (fs.readFileSync(`build/status/${f}`, 'utf8').trim() === 'fail') failed.push(f);
+              }
+            }
+            // Build passed but a later step (merge/publish) crashed: no comment needed.
+            if (failed.length === 0) {
+              core.warning('no config failed; skipping failure comment');
+              return;
+            }
+
+            const body = [
+              marker,
+              '❌ Build failed' + (failed.length ? ` for: ${failed.join(', ')}` : '.') + '.',
+              `Run: ${runUrl}`,
+              '',
+              'main is untouched — the PR stays open and the updater re-dispatches it on its next cycle.',
+            ].join('\n');
+
+            const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
+            const existing = comments.find(c => c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            }
+
+      # External mode twin of the internal merge: the build above pinned the PR
+      # head, so a green run means the module repo's main can advance. Same guards:
+      # a moved head/base defers to the updater's next cycle, which re-forks.
+      - name: Merge source PR after successful build
+        if: inputs.source-repo != '' && inputs.source-pr != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.post-source-token.outputs.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = '${{ inputs.source-repo }}';
+            const prNumber = Number('${{ inputs.source-pr }}');
+            const headSha = '${{ inputs.source-head }}';
+
+            const pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
+            if (pr.state !== 'open') {
+              core.info(`PR #${prNumber} is ${pr.state}; nothing to merge`);
+              return;
+            }
+            if (pr.head.sha !== headSha) {
+              core.warning('head moved since dispatch; skipping merge');
+              return;
+            }
+            const mainSha = (await github.rest.git.getRef({ owner, repo, ref: 'heads/main' })).data.object.sha;
+            if (pr.base.sha !== mainSha) {
+              core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}); skipping merge`);
+              return;
+            }
+
+            try {
+              await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, sha: headSha, merge_method: 'rebase' });
+            } catch (e) {
+              // Rebase merges disabled on the source repo would silently block
+              // every future merge — surface it instead of deferring forever.
+              if (e.status === 405) throw e;
+              // main moved between the guard and the merge; the updater re-forks.
+              core.warning(`merge failed: ${e.message}`);
+              return;
+            }
+            core.info(`merged ${repo} PR #${prNumber} into main (${headSha.slice(0, 12)})`);
+
+            // A previously failed build's status comment is stale once we merge.
+            const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
+            const stale = comments.find(c => c.body?.includes('<!-- icedos-cache-build-status -->'));
+            if (stale) await github.rest.issues.deleteComment({ owner, repo, comment_id: stale.id });
+      # A nixpkgs bump changes every module repo's package paths (module repos
+      # evaluate against the machine's nixpkgs), so their package caches must
+      # be rebuilt against the just-published seed. Warm runs carry no PR:
+      # they stage every build.toml in the repo and push, never merging.
+      - name: Warm module repo packages after nixpkgs bump
+        if: steps.merge.outputs.merged == 'true' && github.head_ref == 'update/nixpkgs'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repos=$(tr -d '[:space:]' <state/module-repos | grep -v '^$' || true)
+          for repo in $repos; do
+            head=$(curl -fsSL "https://api.github.com/repos/IceDOS/$repo/commits/main" | jq -r .sha)
+            gh workflow run nix-build.yml --ref main \
+              -f source-repo="$repo" -f source-head="$head" -f source-pr=
+            echo "dispatched warm run for $repo @$head"
+          done
+
+      - name: Report failure
+        if: failure() && github.event_name != 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const label = 'ci-failure';
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = `**${context.workflow}** failed on \`${context.ref}\` (${context.eventName}) at ${new Date().toISOString()}\n${runUrl}\ncc @IceDBorn`;
+            const existing = (await github.rest.issues.listForRepo({ owner, repo, labels: label, state: 'open', per_page: 1 })).data;
+            if (existing.length) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: existing[0].number, body });
+              core.info(`reported on #${existing[0].number}`);
+            } else {
+              await github.rest.issues.create({ owner, repo, title: 'CI failure reports', body, labels: [label] });
+              core.info('created the rolling failure-report issue');
+            }
