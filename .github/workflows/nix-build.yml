@@ -193,16 +193,39 @@ jobs:
           repositories: ${{ inputs.source-repo }}
           permission-contents: write
           permission-pull-requests: write
-      # External mode: pin the module repo to the PR head in every config. The
-      # 00-base warm-up has no state lock yet, so core's inline-ref fallback pins
-      # the head rev, and the seeded lock then carries it to every other config.
-      # Repo-level granularity on purpose: module-level narrowing could miss
-      # configs that pull the module in transitively via dependencies.
+      # External mode: pin the module repo to the PR head. Narrowed to configs
+      # that list a module the PR touched — a config with fetchDependencies =
+      # false declares its module list exhaustive, so narrowing is safe; configs
+      # relying on transitive pulls keep the default true and stay pinned. Falls
+      # back to repo-wide when the PR touches no modules/ path.
       - name: Pin source repo PR head in configs
         if: inputs.source-repo != ''
+        env:
+          GT: ${{ steps.source-token.outputs.token }}
         run: |
           match='url = "github:icedos/${{ inputs.source-repo }}"'
-          grep -rlF "$match" config/ >build-pin-files.txt || true
+          curl -sf --retry 3 -H "Authorization: Bearer $GT" \
+            "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/pulls/${{ inputs.source-pr }}/files?per_page=100" \
+            | jq -r '.[].filename' | grep -oE '^modules/[^/]+' \
+            | xargs -n1 basename >changed-modules.txt || true
+          python3 - <<'PYEOF'
+          import glob, os, tomllib
+
+          repo_url = 'github:icedos/${{ inputs.source-repo }}'
+          changed = {m for m in open('changed-modules.txt').read().split()}
+          pins = []
+          for cfg in sorted(glob.glob('config/*.toml')):
+              data = tomllib.load(open(cfg, 'rb'))
+              for repo in data.get('icedos', {}).get('repositories') or []:
+                  if repo_url not in repo.get('url', ''):
+                      continue
+                  mods = set(repo.get('modules') or [])
+                  if not changed or (mods & changed) or repo.get('fetchDependencies', True):
+                      pins.append(cfg)
+                      break
+          open('build-pin-files.txt', 'w').write(''.join(f'{p}\n' for p in pins))
+          print('pinning:', pins)
+          PYEOF
           [ -s build-pin-files.txt ] || { echo "source repo not referenced by any config" >&2; exit 1; }
           while read -r f; do
             sed -i "s|$match|url = \"github:icedos/${{ inputs.source-repo }}/${{ inputs.source-head }}\"|" "$f"
@@ -210,7 +233,7 @@ jobs:
           # Only the affected configs need (re)building; derived here so the
           # mapping can never drift from the configs themselves.
           echo "ICEDOS_BUILD_CONFIGS=$(xargs -n1 basename < build-pin-files.txt | tr '\n' ' ')" >>"$GITHUB_ENV"
-          rm build-pin-files.txt
+          rm build-pin-files.txt changed-modules.txt
           git diff --stat -- config/
       - name: Run Nix Build
         run: nix run .#build
