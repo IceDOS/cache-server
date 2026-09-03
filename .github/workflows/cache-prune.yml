@@ -1,0 +1,68 @@
+name: Cache Prune
+
+# Deletes cache entries cache.nixos.org already serves, and unsigned ones no
+# client can use. Dry run unless `apply` is checked.
+on:
+  workflow_dispatch:
+    inputs:
+      sets:
+        description: "Which sets to delete"
+        type: choice
+        default: upstream,unsigned
+        options:
+          - upstream,unsigned
+          - upstream
+          - unsigned
+      apply:
+        description: "Actually delete (unchecked = dry run)"
+        type: boolean
+        default: false
+
+run-name: >-
+  ${{ inputs.apply && format('prune: DELETE {0}', inputs.sets)
+      || format('prune: dry run {0}', inputs.sets) }}
+
+permissions:
+  contents: read
+
+# Nix Build's own group, so a prune never overlaps a build pushing to the bucket.
+concurrency:
+  group: Nix Build
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-central-1
+          AWS_DEFAULT_REGION: eu-central-1
+        run: ./scripts/cache-audit.sh cache-audit | tee audit.txt
+      - name: Prune
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-central-1
+          AWS_DEFAULT_REGION: eu-central-1
+        run: |
+          ./scripts/cache-prune.sh cache-audit \
+            --sets '${{ inputs.sets }}' ${{ inputs.apply && '--apply' || '' }} \
+            2>&1 | tee prune.txt
+          {
+            echo '### Cache prune (${{ inputs.apply && 'applied' || 'dry run' }})'
+            echo '```'
+            cat audit.txt prune.txt
+            echo '```'
+            echo 'Purge the CDN after an applied run.'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cache-prune-lists
+          path: |
+            cache-audit/*.txt
+          retention-days: 7
