@@ -1,0 +1,41 @@
+name: Cache Audit
+
+# Read-only inventory of the S3 cache: how much of it is redundant with
+# cache.nixos.org, and how much is unsigned and therefore unusable.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-central-1
+          AWS_DEFAULT_REGION: eu-central-1
+        run: |
+          ./scripts/cache-audit.sh cache-audit | tee report.txt
+          {
+            echo '### Cache audit'
+            echo '```'
+            cat report.txt
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cache-audit-lists
+          # The narinfo bodies are the bulk and are re-syncable; ship only the lists.
+          path: |
+            cache-audit/*.txt
+          retention-days: 7
