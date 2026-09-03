@@ -18,17 +18,23 @@ while [ $# -gt 0 ]; do
 done
 
 : >"$W/drop.txt"
+: >"$W/orphan-drop.txt"
 for s in ${SETS//,/ }; do
   [ -f "$W/$s.txt" ] || { echo "no $W/$s.txt; run cache-audit.sh first" >&2; exit 1; }
-  cat "$W/$s.txt" >>"$W/drop.txt"
+  # orphan.txt holds nar keys, every other set holds narinfo files.
+  if [ "$s" = orphan ]; then cat "$W/$s.txt" >>"$W/orphan-drop.txt"
+  else cat "$W/$s.txt" >>"$W/drop.txt"; fi
 done
 sort -u -o "$W/drop.txt" "$W/drop.txt"
+sort -u -o "$W/orphan-drop.txt" "$W/orphan-drop.txt"
 comm -23 "$W/all.txt" "$W/drop.txt" >"$W/keep.txt"
 
 nars() { [ -s "$1" ] || return 0
   xargs -a "$1" grep -h '^URL:' 2>/dev/null | awk '{print $2}' | sort -u; }
 nars "$W/keep.txt" >"$W/nar-keep.txt"
 nars "$W/drop.txt" >"$W/nar-drop-all.txt"
+cat "$W/orphan-drop.txt" >>"$W/nar-drop-all.txt"
+sort -u -o "$W/nar-drop-all.txt" "$W/nar-drop-all.txt"
 comm -23 "$W/nar-drop-all.txt" "$W/nar-keep.txt" >"$W/nar-drop.txt"
 
 sed 's|.*/||' "$W/drop.txt" >"$W/delete-keys.txt"
@@ -69,3 +75,6 @@ for b in "$W"/batch-*; do
   echo "deleted $(wc -l <"$b") keys" >&2
 done
 echo "done — purge the CDN or clients keep seeing narinfos for objects that are gone." >&2
+if [ -s "$W/dangling.txt" ] && [ "${SETS#*dangling}" != "$SETS" ]; then
+  echo "run heal-cache.yml next: those paths are gone from the cache until it re-pushes them." >&2
+fi

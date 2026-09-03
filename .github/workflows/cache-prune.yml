@@ -1,18 +1,23 @@
 name: Cache Prune
 
-# Deletes cache entries cache.nixos.org already serves, and unsigned ones no
-# client can use. Dry run unless `apply` is checked.
+# Deletes cache entries cache.nixos.org already serves, unsigned ones no client
+# can use, narinfos whose NAR is gone, and NARs nothing points at. Dry run
+# unless `apply` is checked.
 on:
   workflow_dispatch:
     inputs:
       sets:
         description: "Which sets to delete"
         type: choice
-        default: upstream,unsigned
+        default: upstream,unsigned,dangling,orphan
         options:
+          - upstream,unsigned,dangling,orphan
+          - dangling,orphan
           - upstream,unsigned
           - upstream
           - unsigned
+          - dangling
+          - orphan
       apply:
         description: "Actually delete (unchecked = dry run)"
         type: boolean
