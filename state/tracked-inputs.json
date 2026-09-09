@@ -9,8 +9,5 @@
   "icedos-github_icedos_kde": "04c0ac1c0e662a9ac9b66aedeb25ef5843f01366",
   "icedos-github_icedos_providers": "5d7e31dc0d66939b2bf0525434fab1d1a95e35cd",
   "icedos-github_icedos_tweaks": "b55a50051abde84c57adeb9444330dc202074224",
-  "icedos": {
-    "rev": "14aa4f506b6a552bbd30306e30328e719e5dcf3a",
-    "repo": ""
-  }
+  "icedos": "cf7786e22f8ba44f87aede24b0b135b1091cf644"
 }
