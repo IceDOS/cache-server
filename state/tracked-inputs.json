@@ -3,7 +3,10 @@
   "ambiled": "8a9a9042f77129ea5aded8a98f0804a673332c1b",
   "prefixer": "b7c0a01125ad1b908363d70a51731ad7303ede5e",
   "plasmazones": "3c980f86c7e312e7622315031b62d265a4d61f9e",
-  "jovian": "6087aab8ab19bc314bbe132c6f3114a85d772375",
+  "jovian": {
+    "rev": "1d3ea3cb0aa757316468105748f514fdb92b669d",
+    "repo": ""
+  },
   "icedos-github_icedos_apps": {
     "rev": "8c67cfe9280d2ed5b818e3f80e7324a52b92e5f6",
     "repo": ""
