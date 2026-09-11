@@ -436,6 +436,14 @@ jobs:
             let shaToMerge = pr.head.sha;
             if (treeEntries.length > 0) {
               const tree = await github.rest.git.createTree({ owner, repo, base_tree: pr.head.sha, tree: treeEntries });
+              const mainTreeSha = (await github.rest.repos.getCommit({ owner, repo, ref: mainSha })).data.commit.tree.sha;
+              if (tree.data.sha === mainTreeSha) {
+                // Folding the build's revs reverted the branch to main: the PR would
+                // carry no diff and the merge API rejects that with 405. Leave the
+                // PR; auto-update's idempotent upsert stops re-pushing this branch.
+                core.warning(`fold equals main's tree; PR #${prNumber} is a no-op, skipping merge`);
+                return;
+              }
               const headTree = (await github.rest.repos.getCommit({ owner, repo, ref: pr.head.sha })).data.commit.tree.sha;
               if (tree.data.sha === headTree) {
                 // Identical content: pushing would fire a synchronize event and loop

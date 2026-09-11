@@ -159,39 +159,42 @@ jobs:
               return (await github.rest.git.createBlob({ owner, repo, content, encoding: 'utf-8' })).data.sha;
             }
 
-            // Branch head/parent plus the blob sha of `path` at head, or null when absent.
-            async function branchState(branch, path) {
+            // Branch head/parent plus the blob shas of `paths` at head (null when absent).
+            async function branchState(branch, paths) {
               try {
                 const ref = await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
                 const commit = await github.rest.git.getCommit({ owner, repo, commit_sha: ref.data.object.sha });
-                let blob = null;
-                try {
-                  const file = await github.rest.repos.getContent({ owner, repo, path, ref: `heads/${branch}` });
-                  if (!Array.isArray(file.data)) blob = file.data.sha;
-                } catch (e) {
-                  if (e.status !== 404) throw e;
+                const blobs = [];
+                for (const path of paths) {
+                  try {
+                    const file = await github.rest.repos.getContent({ owner, repo, path, ref: `heads/${branch}` });
+                    blobs.push(!Array.isArray(file.data) ? file.data.sha : null);
+                  } catch (e) {
+                    if (e.status !== 404) throw e;
+                    blobs.push(null);
+                  }
                 }
-                return { head: ref.data.object.sha, parent: commit.data.parents[0]?.sha, blob };
+                return { head: ref.data.object.sha, parent: commit.data.parents[0]?.sha, blobs };
               } catch (e) {
                 if (e.status === 404) return null;
                 throw e;
               }
             }
 
-            async function upsert({ branch, path, content, message, title, body }) {
-              const blobSha = await blobShaOf(content);
-              const cur = await branchState(branch, path);
+            async function upsert({ branch, files, message, title, body }) {
+              for (const f of files) f.blob = await blobShaOf(f.content);
+              const cur = await branchState(branch, files.map((f) => f.path));
 
               // Identical content on top of the same main commit: the open PR already
               // triggers a build, and another force-push would re-queue it for nothing.
-              if (cur && cur.blob === blobSha && cur.parent === mainSha) {
+              if (cur && cur.parent === mainSha && files.every((f, i) => cur.blobs[i] === f.blob)) {
                 core.info(`${branch}: already up to date`);
                 return;
               }
 
               const tree = await github.rest.git.createTree({
                 owner, repo, base_tree: mainSha,
-                tree: [{ path, mode: '100644', type: 'blob', sha: blobSha }],
+                tree: files.map(f => ({ path: f.path, mode: '100644', type: 'blob', sha: f.blob })),
               });
               const commit = await github.rest.git.createCommit({
                 owner, repo, message, tree: tree.data.sha, parents: [mainSha],
@@ -235,8 +238,7 @@ jobs:
               const short = '${{ steps.update.outputs.short }}';
               await upsert({
                 branch: 'update/nixpkgs',
-                path: 'flake.lock',
-                content: fs.readFileSync('flake.lock', 'utf8'),
+                files: [{ path: 'flake.lock', content: fs.readFileSync('flake.lock', 'utf8') }],
                 message: `update(nixpkgs): ${old} -> ${short}`,
                 title: `update(nixpkgs): ${old} -> ${short}`,
                 body: `nixpkgs: ${old} -> ${short}`,
@@ -244,13 +246,35 @@ jobs:
             }
 
             const base = JSON.parse(fs.readFileSync('state/tracked-inputs.json', 'utf8'));
-            for (const r of Object.values(JSON.parse(process.env.REVS || '{}'))) {
+            const revs = Object.values(JSON.parse(process.env.REVS || '{}'));
+            const worktreeLock = JSON.parse(fs.readFileSync('flake.lock', 'utf8'));
+            let mainLock = null;
+            if (revs.length > 0) {
+              const mainLockResp = await github.rest.repos.getContent({ owner, repo, path: 'flake.lock', ref: mainSha });
+              mainLock = JSON.parse(Buffer.from(mainLockResp.data.content, 'base64').toString('utf-8'));
+            }
+            for (const r of revs) {
               // Spread-copy per input: each PR must carry only its own rev change.
               const detail = r.old ? `${r.name}: ${r.old.slice(0, 12)} -> ${r.rev.slice(0, 12)}` : `${r.name}: ${r.rev.slice(0, 12)}`;
+              const files = [{
+                path: 'state/tracked-inputs.json',
+                content: JSON.stringify({ ...base, [r.key]: { rev: r.rev, repo: (base[r.key] && base[r.key].repo) || '' } }, null, 2) + '\n',
+              }];
+
+              // Root-lock inputs (icedos = github:IceDOS/core) resolve from the branch's
+              // flake.lock via the icedos-config follow: without the bumped node the
+              // build resolves the old rev and the fold leaves the PR with no diff.
+              if (worktreeLock.nodes[r.name]
+                  && JSON.stringify(mainLock.nodes[r.name]) !== JSON.stringify(worktreeLock.nodes[r.name])) {
+                // Clone per input so one PR never carries another input's node swap.
+                const lock = structuredClone(mainLock);
+                lock.nodes[r.name] = worktreeLock.nodes[r.name];
+                files.push({ path: 'flake.lock', content: JSON.stringify(lock, null, 2) + '\n' });
+              }
+
               await upsert({
                 branch: `update/input-${r.name}`,
-                path: 'state/tracked-inputs.json',
-                content: JSON.stringify({ ...base, [r.key]: r.rev }, null, 2) + '\n',
+                files,
                 message: `update(inputs): ${r.name}\n\n${detail}`,
                 title: `update(inputs): ${r.name}`,
                 body: detail,
