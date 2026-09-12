@@ -2,7 +2,10 @@
   "nix-cachyos-kernel": "b8538a38adfd2a443aa0f8f3d506c29161f71f5f",
   "ambiled": "8a9a9042f77129ea5aded8a98f0804a673332c1b",
   "prefixer": "b7c0a01125ad1b908363d70a51731ad7303ede5e",
-  "plasmazones": "3c980f86c7e312e7622315031b62d265a4d61f9e",
+  "plasmazones": {
+    "rev": "720b891e67087da484f7b8d16985b2636a7073a2",
+    "repo": ""
+  },
   "jovian": {
     "rev": "1d3ea3cb0aa757316468105748f514fdb92b669d",
     "repo": ""
