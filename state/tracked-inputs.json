@@ -14,7 +14,10 @@
     "rev": "18c76803873abba24d3bb04098720cc45805a60c",
     "repo": ""
   },
-  "icedos-github_icedos_hardware": "0bf78dcc8bcd2fae1ec0ec31e42621ebdd274467",
+  "icedos-github_icedos_hardware": {
+    "rev": "b7829e1d1732d849dcc6ef40712667b600eb8ef8",
+    "repo": ""
+  },
   "icedos-github_icedos_kde": "72b2dde1339011627fbb40ff1a8d406f66306fed",
   "icedos-github_icedos_providers": "f5ed80e06c8c58f3eaa8e44da24ea161dd162144",
   "icedos-github_icedos_tweaks": "e53037f320923f3aebcb1ff37fc97d8873fdafbc",
