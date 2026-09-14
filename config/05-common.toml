@@ -16,11 +16,6 @@ modules = [
   "jovian",
 ]
 
-[icedos.applications.steam.headless-session]
-colorManagement = true
-hdr = true
-inputInjection = true
-
 [icedos.system]
 packages = [
   "android-studio",
