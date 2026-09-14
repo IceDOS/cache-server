@@ -23,7 +23,11 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
+      # nix-permission-edict hands the runner user /nix; without it the single-user
+      # installer aborts with "/nix exists but is not writeable".
       - uses: wimpysworld/nothing-but-nix@v10
+        with:
+          nix-permission-edict: true
       - uses: nixbuild/nix-quick-install-action@v30
         with:
           nix_conf: |
