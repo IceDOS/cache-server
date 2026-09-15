@@ -4,7 +4,10 @@
     "repo": ""
   },
   "ambiled": "8a9a9042f77129ea5aded8a98f0804a673332c1b",
-  "prefixer": "b7c0a01125ad1b908363d70a51731ad7303ede5e",
+  "prefixer": {
+    "rev": "f8600ce5cf52e7aa8fc7d0dcf5af6812e5d6d70c",
+    "repo": ""
+  },
   "plasmazones": {
     "rev": "a0e5db6a5d1dade9a3a64e8bb6df3b1e5f2850eb",
     "repo": ""
