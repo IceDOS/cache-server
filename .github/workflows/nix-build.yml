@@ -25,7 +25,8 @@ run-name: >-
 # gates module repo mains (apps/hardware/tweaks) behind a green build.
 #
 # Concurrency is a single global queue: builds share the runner store cache, and a
-# cancel would kill an in-progress kernel compile.
+# cancel would kill an in-progress kernel compile. `queue: max` keeps every pending
+# run; the default drops all but the newest, silently losing gates and dispatches.
 on:
   workflow_dispatch:
     inputs:
@@ -63,6 +64,7 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   build:
@@ -73,6 +75,27 @@ jobs:
     # big configs legitimately need hours; the bound only catches true hangs.
     timeout-minutes: 360
     steps:
+      # The queue keeps runs whose PR moved on while they waited (a force-push, a
+      # merge by an earlier duplicate); building those would only waste hours.
+      - name: Drop superseded run
+        if: github.event_name == 'pull_request' || inputs.source-pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.event_name == 'pull_request' && github.repository || format('IceDOS/{0}', inputs.source-repo) }}
+          PR: ${{ github.event.pull_request.number || inputs.source-pr }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.source-head }}
+        run: |
+          # A failed lookup fails the step (bash -e): never cancel on missing data.
+          info=$(gh api "repos/$REPO/pulls/$PR" --jq '"\(.state) \(.head.sha)"')
+          read -r state head <<<"$info"
+          if [ "$state" = open ] && [ "$head" = "$HEAD_SHA" ]; then
+            exit 0
+          fi
+          echo "$REPO#$PR is $state at ${head:0:12}, this run built ${HEAD_SHA:0:12}; cancelling"
+          gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
+          # Cancellation is asynchronous; never fall through into the build.
+          sleep 300
+          exit 1
       - uses: actions/checkout@v4
         with:
           # Build exactly the PR head: a rebase merge then makes main identical to what
@@ -160,6 +183,7 @@ jobs:
         if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
         env:
           HEAD_REF: ${{ github.head_ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if curl -fsSL --retry 3 -o seed.lock \
               'https://raw.githubusercontent.com/IceDOS/cache-server/cache/state.lock'; then
@@ -179,12 +203,35 @@ jobs:
             echo "ICEDOS_SEED_DIR=$PWD/seed-locks" >>"$GITHUB_ENV"
           fi
 
+          # Module repos are the icedos-github_icedos_<repo> tracked inputs.
+          module_repos=$(python3 -c "
+          import tomllib
+          names = (t['name'] for t in tomllib.load(open('tracked-inputs.toml', 'rb'))['trackedInputs'])
+          print(' '.join(n.removeprefix('icedos-github_icedos_') for n in names if n.startswith('icedos-github_icedos_')))
+          ")
+          head_of() { gh api "repos/IceDOS/$1/commits/main" --jq .sha; }
+
+          # unpin: seed nodes that must re-resolve. fold: tracked-inputs.json names
+          # the merge records at their built rev. pins: repo=sha every config
+          # (and the repo's staged package configs) resolves at.
           unpin=''
+          fold=''
+          pins=''
+          all_repo_pins() {
+            for r in $module_repos; do
+              unpin="$unpin icedos-github_icedos_$r"
+              pins="$pins $r=$(head_of "$r")"
+            done
+          }
           case '${{ github.event_name }}' in
             workflow_dispatch)
               # External mode: only the source repo's PR head may move.
               if [ -n '${{ inputs.source-repo }}' ]; then
                 unpin='icedos-github_icedos_${{ inputs.source-repo }}'
+              else
+                # Repair run: rebuild every config and every module package at the
+                # repos' current mains, so the published channel is complete.
+                all_repo_pins
               fi
               ;;
             pull_request)
@@ -193,9 +240,25 @@ jobs:
                 # A nixpkgs bump also rides the module repos along: their packages
                 # (patches included) are evaluated against the machine's nixpkgs,
                 # so a bump can invalidate repo content (e.g. gamescope patches).
-                update/nixpkgs) unpin='nixpkgs home-manager icedos-github_icedos_apps icedos-github_icedos_hardware icedos-github_icedos_kde icedos-github_icedos_providers icedos-github_icedos_tweaks' ;;
+                # Their package configs build in this same run, so the bump never
+                # publishes before the packages users pull are cached.
+                update/nixpkgs)
+                  unpin='nixpkgs home-manager'
+                  all_repo_pins
+                  fold="${unpin#nixpkgs home-manager}"
+                  ;;
                 update/input-*)
                   unpin="$HEAD_REF" && unpin="${unpin#update/input-}"
+                  fold="$unpin"
+                  # A repo bump carries its rev in this branch's tracked-inputs.json;
+                  # its package configs rebuild at that rev alongside the configs.
+                  case "$unpin" in
+                    icedos-github_icedos_*)
+                      rev=$(jq -r --arg k "$unpin" '.[$k] | if type == "object" then .rev else (. // "") end' state/tracked-inputs.json)
+                      [ -n "$rev" ] || { echo "no rev for $unpin in state/tracked-inputs.json" >&2; exit 1; }
+                      pins="${unpin#icedos-github_icedos_}=$rev"
+                      ;;
+                  esac
                   # Narrow the build to the configs this input can affect
                   # (tracked-inputs.toml). Unknown inputs build everything.
                   cfgs=$(python3 - "$unpin" <<'PYEOF'
@@ -219,6 +282,33 @@ jobs:
           # a frozen channel node pins the stale pem into every future seed
           unpin="$unpin cache-server"
           echo "ICEDOS_UNPIN=$unpin" >>"$GITHUB_ENV"
+          echo "ICEDOS_FOLD=$fold" >>"$GITHUB_ENV"
+          echo "ICEDOS_REPO_PINS=$pins" >>"$GITHUB_ENV"
+
+          # The local channel core's genflake pins against (ICEDOS_CACHE_CHANNEL_DIR),
+          # mirroring what users with pinInputs read from the cache branch: tracked
+          # leaves at this checkout's revs, the root nixpkgs at flake.lock's rev (never
+          # a seed's, which is how a bump once built nothing), home-manager at the
+          # seed's rev unless this run advances it.
+          mkdir -p channel
+          cp state/tracked-inputs.json channel/tracked-inputs.json
+          nixpkgs_rev=$(jq -r '.nodes.nixpkgs.locked.rev' flake.lock)
+          hm_rev=''
+          if [ "$HEAD_REF" != update/nixpkgs ] && [ -f seed.lock ]; then
+            hm_rev=$(jq -r '.nodes.root.inputs["home-manager"] as $k
+              | if ($k | type) == "string" then (.nodes[$k].locked.rev // "") else "" end' seed.lock)
+          fi
+          [ -n "$hm_rev" ] || hm_rev=$(gh api repos/nix-community/home-manager/commits/master --jq .sha)
+          jq -n --arg n "$nixpkgs_rev" --arg h "$hm_rev" '{
+            version: 7, root: "root",
+            nodes: {
+              root: { inputs: { nixpkgs: "nixpkgs", "home-manager": "home-manager" } },
+              nixpkgs: { locked: { type: "github", owner: "nixos", repo: "nixpkgs", rev: $n } },
+              "home-manager": { locked: { type: "github", owner: "nix-community", repo: "home-manager", rev: $h } }
+            }
+          }' >channel/state.lock
+          echo "ICEDOS_CACHE_CHANNEL_DIR=$PWD/channel" >>"$GITHUB_ENV"
+          echo "channel: nixpkgs ${nixpkgs_rev:0:12}, home-manager ${hm_rev:0:12}; unpin:$unpin; fold:$fold; pins:$pins"
       # External mode needs write access to the module repo whose PR is validated.
       - name: Mint source repo token
         id: source-token
@@ -231,6 +321,29 @@ jobs:
           repositories: ${{ inputs.source-repo }}
           permission-contents: write
           permission-pull-requests: write
+      # Internal runs that move module repos (a repo bump, a nixpkgs bump, a repair
+      # dispatch) pin each repo to one sha in every config and stage its package
+      # configs at that sha, so the channel they publish is fully built.
+      - name: Stage module repo packages
+        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.source-repo == '')
+        env:
+          GT: ${{ github.token }}
+        run: |
+          staged=''
+          for pin in $ICEDOS_REPO_PINS; do
+            repo=${pin%%=*}
+            sha=${pin#*=}
+            sed -i "s|url = \"github:icedos/$repo\"|url = \"github:icedos/$repo/$sha\"|" config/*.toml
+            names=$(scripts/stage-build-tomls.sh "$repo" "$sha")
+            staged="$staged ${names//$'\n'/ }"
+          done
+          # A narrowed run must include the staged configs; an unnarrowed one
+          # already builds every config/*.toml.
+          if [ -n "${ICEDOS_BUILD_CONFIGS:-}" ] && [ -n "${staged// /}" ]; then
+            echo "ICEDOS_BUILD_CONFIGS=$ICEDOS_BUILD_CONFIGS$staged" >>"$GITHUB_ENV"
+          fi
+          echo "staged:$staged"
+          git diff --stat -- config/
       # External mode: pin the module repo to the PR head. Narrowed to configs
       # that list a module the PR touched — a config with fetchDependencies =
       # false declares its module list exhaustive, so narrowing is safe; configs
@@ -258,39 +371,12 @@ jobs:
           fi
 
           # Prefer the repo's own minimal build configs: any */build.toml at the
-          # PR head whose package dir contains changed files — staged with the
-          # repo pinned to it. Nesting-agnostic (apps: modules/<pkg>; hardware:
-          # modules/<group>/modules/<pkg>). Packages without one fall back to
-          # the tracked-inputs narrowing below.
-          curl -sf --retry 3 -H "Authorization: Bearer $GT" \
-            "https://api.github.com/repos/IceDOS/${{ inputs.source-repo }}/git/trees/${{ inputs.source-head }}?recursive=1" \
-            | jq -r '.tree[] | select(.path | test("(^|/)build(-[^/]+)?\\.toml$")) | .path' >build-tomls.txt || true
-
-          # The filename suffix names the variant: build.toml -> <pkg>,
-          # build-rc.toml -> <pkg>-rc — so variants stage as distinct configs.
-          staged=''
-          while read -r bt; do
-            [ -n "$bt" ] || continue
-            dir=$(dirname "$bt")
-            if [ -s changed-files.txt ]; then
-              grep -q "^$dir/" changed-files.txt || continue
-            fi
-            fname=$(basename "$bt")
-            variant=${fname#build}; variant=${variant%.toml}
-            name=$(basename "$dir")$variant
-            target="config/90-ext-${{ inputs.source-repo }}-$name.toml"
-            if curl -fsSL --retry 3 -o "$target" \
-                "https://raw.githubusercontent.com/IceDOS/${{ inputs.source-repo }}/${{ inputs.source-head }}/$bt"; then
-              sed -i "s|url = \"github:icedos/${{ inputs.source-repo }}\"|url = \"github:icedos/${{ inputs.source-repo }}/${{ inputs.source-head }}\"|" "$target"
-              # A silent no-op sed would float the staged config to main and
-              # green-light a PR whose content was never built — fail loudly.
-              grep -q "github:icedos/${{ inputs.source-repo }}/${{ inputs.source-head }}" "$target" \
-                || { echo "PR-head pin failed for $target" >&2; rm -f "$target"; exit 1; }
-              staged="$staged 90-ext-${{ inputs.source-repo }}-$name.toml"
-            else
-              rm -f "$target"
-            fi
-          done < build-tomls.txt
+          # PR head whose package dir contains changed files, staged with the
+          # repo pinned to it. Packages without one fall back to the
+          # tracked-inputs narrowing below.
+          # Assigned bare (no pipe) so a staging failure fails the step.
+          staged=$(scripts/stage-build-tomls.sh '${{ inputs.source-repo }}' '${{ inputs.source-head }}' changed-files.txt)
+          staged=${staged//$'\n'/ }
           if [ -n "$staged" ]; then
             echo "ICEDOS_BUILD_CONFIGS=$staged" >>"$GITHUB_ENV"
             git diff --stat -- config/
@@ -327,7 +413,7 @@ jobs:
           # Only the affected configs need (re)building; derived here so the
           # mapping can never drift from the configs themselves.
           echo "ICEDOS_BUILD_CONFIGS=$(xargs -n1 basename < build-pin-files.txt | tr '\n' ' ')" >>"$GITHUB_ENV"
-          rm build-pin-files.txt changed-files.txt changed-modules.txt build-tomls.txt
+          rm build-pin-files.txt changed-files.txt changed-modules.txt
           git diff --stat -- config/
       - name: Run Nix Build
         if: steps.pin.outputs.noop != 'true'
@@ -418,11 +504,11 @@ jobs:
             let treeEntries = [];
             if (Object.keys(built).length > 0) {
               const file = JSON.parse(fs.readFileSync('state/tracked-inputs.json', 'utf8'));
-              // Fold only the input this PR advances: bystander revs the build
-              // resolved fresh (seeds don't cover every config) would leapfrog
-              // other open PRs and make them stale.
-              const own = (/^update\/input-(.+)$/.exec(pr.head.ref) || [])[1];
-              const entries = Object.values(built).filter((r) => own && r.name === own);
+              // Fold only what this PR advances (ICEDOS_FOLD, from the seed step):
+              // bystander revs the build resolved fresh would leapfrog other open
+              // PRs and make them stale.
+              const fold = (process.env.ICEDOS_FOLD || '').split(/\s+/).filter(Boolean);
+              const entries = Object.values(built).filter((r) => fold.includes(r.name));
               // {rev, repo} lets consumers guard the name match against the host repo.
               for (const r of entries) file[r.key] = { rev: r.rev, repo: r.repo || '' };
               const content = JSON.stringify(file, null, 2) + '\n';
@@ -688,23 +774,6 @@ jobs:
             const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
             const stale = comments.find(c => c.body?.includes('<!-- icedos-cache-build-status -->'));
             if (stale) await github.rest.issues.deleteComment({ owner, repo, comment_id: stale.id });
-      # A nixpkgs bump changes every module repo's package paths (module repos
-      # evaluate against the machine's nixpkgs), so their package caches must
-      # be rebuilt against the just-published seed. Warm runs carry no PR:
-      # they stage every build.toml in the repo and push, never merging.
-      - name: Warm module repo packages after nixpkgs bump
-        if: steps.merge.outputs.merged == 'true' && github.head_ref == 'update/nixpkgs'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          repos=$(tr -d '[:blank:]\r' <state/module-repos | grep -v '^$' || true)
-          for repo in $repos; do
-            head=$(curl -fsSL "https://api.github.com/repos/IceDOS/$repo/commits/main" | jq -r .sha)
-            gh workflow run nix-build.yml --ref main \
-              -f source-repo="$repo" -f source-head="$head" -f source-pr=
-            echo "dispatched warm run for $repo @$head"
-          done
-
       - name: Report failure
         if: failure() && github.event_name != 'pull_request'
         uses: actions/github-script@v7

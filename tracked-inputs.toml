@@ -50,3 +50,15 @@ configs = ["05-common.toml"]
 [[trackedInputs]]
 name = "icedos-github_icedos_tweaks"
 configs = ["40-kde.toml"]
+
+[[trackedInputs]]
+name = "icedos-github_icedos_desktop"
+configs = ["40-kde.toml"]
+
+[[trackedInputs]]
+name = "stylix"
+configs = ["40-kde.toml"]
+
+[[trackedInputs]]
+name = "plasma-manager"
+configs = ["40-kde.toml"]

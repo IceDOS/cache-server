@@ -99,12 +99,17 @@ lock = json.load(open(path))
 nodes = lock.get("nodes", {})
 
 # Same key lookup as cache-server's tracked-revs.py: exact match, else a
-# "-<name>" suffixed node key.
+# "-<name>" suffixed node key. A root input also resolves through its reference:
+# nix keys a clashing node `nixpkgs_2`, which neither match would catch.
+root_inputs = nodes.get("root", {}).get("inputs", {})
 targets = set()
 for name in patterns:
     if name in nodes:
         targets.add(name)
     targets.update(k for k in nodes if k.endswith("-" + name))
+    ref = root_inputs.get(name)
+    if isinstance(ref, str):
+        targets.add(ref)
 for k in targets:
     nodes.pop(k, None)
 

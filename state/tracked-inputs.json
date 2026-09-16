@@ -31,7 +31,19 @@
   "icedos-github_icedos_providers": "f5ed80e06c8c58f3eaa8e44da24ea161dd162144",
   "icedos-github_icedos_tweaks": "e53037f320923f3aebcb1ff37fc97d8873fdafbc",
   "icedos": {
-    "rev": "8e5b61cbf78bbb675ff3e357ab64b1c1f55c3bcb",
+    "rev": "691e64640194a16ea67d162951500a6d5b14d587",
     "repo": ""
+  },
+  "icedos-github_icedos_desktop": {
+    "rev": "12e8a82e07957a4ae855e26d566b0cab5f63a8ee",
+    "repo": ""
+  },
+  "stylix": {
+    "rev": "5e3809851f486e7fc7e84b40f174c74b60ecc784",
+    "repo": "github:nix-community/stylix"
+  },
+  "plasma-manager": {
+    "rev": "a19a2a029fa180911bd89c554dca1616e10f4c1d",
+    "repo": "github:nix-community/plasma-manager"
   }
 }
