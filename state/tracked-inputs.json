@@ -28,7 +28,10 @@
     "rev": "fff4b8e1b46b84ff22c112328d1b0201a48ad825",
     "repo": ""
   },
-  "icedos-github_icedos_providers": "f5ed80e06c8c58f3eaa8e44da24ea161dd162144",
+  "icedos-github_icedos_providers": {
+    "rev": "86f823cc597a496a3b8f4424ab3bb168d806303f",
+    "repo": ""
+  },
   "icedos-github_icedos_tweaks": {
     "rev": "f9b381c689dd704da94d0b54f8ef6dca38f74233",
     "repo": ""
