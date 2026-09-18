@@ -6,7 +6,8 @@ modules = [
   "prefixer",
   "sekirofpsunlock",
   "steam",
-  "steam-sunshine-headless-session",
+  "steam-headless",
+  "sunshine-headless",
   "sunshine",
 ]
 
