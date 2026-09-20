@@ -45,8 +45,8 @@
     "repo": ""
   },
   "stylix": {
-    "rev": "5e3809851f486e7fc7e84b40f174c74b60ecc784",
-    "repo": "github:nix-community/stylix"
+    "rev": "72b961ba029683d87df6826c14c5a0cb06c5eed5",
+    "repo": ""
   },
   "plasma-manager": {
     "rev": "a19a2a029fa180911bd89c554dca1616e10f4c1d",
