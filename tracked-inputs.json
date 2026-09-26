@@ -1,0 +1,55 @@
+{
+  "nix-cachyos-kernel": {
+    "rev": "444d135dde71c1de547cf7bfd73e67145e67aebb",
+    "repo": ""
+  },
+  "ambiled": "8a9a9042f77129ea5aded8a98f0804a673332c1b",
+  "prefixer": {
+    "rev": "21f785efaa101f139961026debff776348d0fda0",
+    "repo": ""
+  },
+  "plasmazones": {
+    "rev": "4a33918a60becba875fdce5e45fd217523ad8df0",
+    "repo": ""
+  },
+  "jovian": {
+    "rev": "dde76577faacee7682192f26a9b4230526fbc3ed",
+    "repo": ""
+  },
+  "icedos-github_icedos_apps": {
+    "rev": "9816242c42d4bbbd73305609928e6422d10f14ce",
+    "repo": ""
+  },
+  "icedos-github_icedos_hardware": {
+    "rev": "25bd622f12f882635389caba7b4ff2044318cb7d",
+    "repo": ""
+  },
+  "icedos-github_icedos_kde": {
+    "rev": "fff4b8e1b46b84ff22c112328d1b0201a48ad825",
+    "repo": ""
+  },
+  "icedos-github_icedos_providers": {
+    "rev": "86f823cc597a496a3b8f4424ab3bb168d806303f",
+    "repo": ""
+  },
+  "icedos-github_icedos_tweaks": {
+    "rev": "95c46f51bc85b1cbcc4d58bef2750581a26addab",
+    "repo": ""
+  },
+  "icedos": {
+    "rev": "783ce534c4bedad95d35c26210d2ea7da920c922",
+    "repo": ""
+  },
+  "icedos-github_icedos_desktop": {
+    "rev": "69cb21a9a9c57418054d16750ae723d0d88f0923",
+    "repo": ""
+  },
+  "stylix": {
+    "rev": "abff36bfab11cbdcd0723f41c1b0921e211be6ac",
+    "repo": ""
+  },
+  "plasma-manager": {
+    "rev": "a19a2a029fa180911bd89c554dca1616e10f4c1d",
+    "repo": "github:nix-community/plasma-manager"
+  }
+}
