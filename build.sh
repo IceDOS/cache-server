@@ -9,12 +9,14 @@ root="$PWD"
 ICEDOS_CACHE_URL="${ICEDOS_SUBSTITUTER:-https://icedos.fyi}"
 # secret-key-files is restricted, so the untrusted CI user's copies land unsigned
 # and clients reject them. The store's secret-key param is not, and signs on write.
-ICEDOS_KEY_PARAM=""
+# Single-threaded xz (the file:// default) pushed a cuda closure past the 30m staging
+# timeout on the 4-vCPU runner. zstd is several times faster; narinfos record it per path.
+ICEDOS_STORE_PARAMS="?compression=zstd&parallel-compression=true"
 if [ -n "${ICEDOS_SIGNING_KEY:-}" ]; then
   printf '%s\n' "$ICEDOS_SIGNING_KEY" > "$root/nix-secret.pem"
   chmod 600 "$root/nix-secret.pem"
   export NIX_CONFIG="secret-key-files = $root/nix-secret.pem"
-  ICEDOS_KEY_PARAM="?secret-key=$root/nix-secret.pem"
+  ICEDOS_STORE_PARAMS="$ICEDOS_STORE_PARAMS&secret-key=$root/nix-secret.pem"
 fi
 
 ICEDOS_KEY_NAME="${ICEDOS_KEY_NAME:-$(cut -d: -f1 <"$root/nix-public.pem" 2>/dev/null || true)}"
@@ -275,7 +277,7 @@ build_and_push() {
     pushed=0
     for attempt in 1 2 3; do
       push_rc=0
-      push_out="$(timeout 30m nix copy --to "file://$stage$ICEDOS_KEY_PARAM" "$result" 2>&1)" || push_rc=$?
+      push_out="$(timeout 30m nix copy --to "file://$stage$ICEDOS_STORE_PARAMS" "$result" 2>&1)" || push_rc=$?
       printf '%s\n' "$push_out"
       [ "$push_rc" -eq 0 ] && { pushed=1; break; }
       echo "$cfg: staging attempt $attempt failed (rc=$push_rc), retrying" >&2
