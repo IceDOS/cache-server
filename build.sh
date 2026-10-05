@@ -231,6 +231,7 @@ build_and_push() {
 
     # Refresh the persisted lock: the build may have resolved newer revs.
     timeout 10m nix --extra-experimental-features "nix-command flakes" flake lock "$work/build/.state"
+    mkdir -p "$root/build/locks"
     cp "$work/build/.state/flake.lock" "$root/build/locks/$name.lock"
 
     echo "pushing $cfg..."
