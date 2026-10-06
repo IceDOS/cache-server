@@ -132,7 +132,9 @@ jobs:
             keep-env-derivations = true
             keep-outputs = true
             max-jobs = auto
-            cores = 0
+            # cores = 0 ran 16 compilers (4 jobs x 4 vCPU) on the 16 GB runner; after a
+            # nixpkgs bump it thrashed silently until the 6h kill.
+            cores = 2
       - uses: nix-community/cache-nix-action@v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'config/*.toml') }}
@@ -429,7 +431,10 @@ jobs:
           git diff --stat -- config/
       - name: Run Nix Build
         if: steps.pin.outputs.noop != 'true'
-        run: nix run .#build
+        run: |
+          # Memory trace: a thrashing runner goes silent, so log pressure before it does.
+          ( while sleep 300; do echo "mem: $(free -m | awk '/^Mem/{print "used="$3"M avail="$7"M"} /^Swap/{print "swap="$3"/"$2"M"}' | tr '\n' ' ')"; done ) &
+          nix run .#build
         env:
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
           ICEDOS_SIGNING_KEY: ${{ secrets.ICEDOS_SIGNING_KEY }}
