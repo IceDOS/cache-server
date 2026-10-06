@@ -76,7 +76,8 @@ jobs:
     timeout-minutes: 360
     steps:
       # The queue keeps runs whose PR moved on while they waited (a force-push, a
-      # merge by an earlier duplicate); building those would only waste hours.
+      # merge by an earlier duplicate). Closed PRs and moved internal PRs cancel;
+      # a moved module PR builds its current head.
       - name: Drop superseded run
         if: github.event_name == 'pull_request' || inputs.source-pr != ''
         env:
@@ -91,8 +92,19 @@ jobs:
           if [ "$state" = open ] && [ "$head" = "$HEAD_SHA" ]; then
             exit 0
           fi
+          # A module PR's head moves faster than the queue drains; cancelling would
+          # starve it forever, so build the current head instead.
+          if [ "$state" = open ] && [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "$REPO#$PR moved to ${head:0:12} since dispatch (${HEAD_SHA:0:12}); building the current head"
+            echo "SOURCE_HEAD=$head" >>"$GITHUB_ENV"
+            exit 0
+          fi
           echo "$REPO#$PR is $state at ${head:0:12}, this run built ${HEAD_SHA:0:12}; cancelling"
-          gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
+          # Retry transient API errors (a 502 once turned a cancel into a failure).
+          for i in 1 2 3 4 5; do
+            gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" && break
+            sleep $((i * 10))
+          done
           # Cancellation is asynchronous; never fall through into the build.
           sleep 300
           exit 1
@@ -375,7 +387,7 @@ jobs:
           # repo pinned to it. Packages without one fall back to the
           # tracked-inputs narrowing below.
           # Assigned bare (no pipe) so a staging failure fails the step.
-          staged=$(scripts/stage-build-tomls.sh '${{ inputs.source-repo }}' '${{ inputs.source-head }}' changed-files.txt)
+          staged=$(scripts/stage-build-tomls.sh '${{ inputs.source-repo }}' "${SOURCE_HEAD:-${{ inputs.source-head }}}" changed-files.txt)
           staged=${staged//$'\n'/ }
           if [ -n "$staged" ]; then
             echo "ICEDOS_BUILD_CONFIGS=$staged" >>"$GITHUB_ENV"
@@ -408,7 +420,7 @@ jobs:
           PYEOF
           [ -s build-pin-files.txt ] || { echo "source repo not referenced by any config" >&2; exit 1; }
           while read -r f; do
-            sed -i "s|$match|url = \"github:icedos/${{ inputs.source-repo }}/${{ inputs.source-head }}\"|" "$f"
+            sed -i "s|$match|url = \"github:icedos/${{ inputs.source-repo }}/${SOURCE_HEAD:-${{ inputs.source-head }}}\"|" "$f"
           done < build-pin-files.txt
           # Only the affected configs need (re)building; derived here so the
           # mapping can never drift from the configs themselves.
@@ -741,7 +753,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = '${{ inputs.source-repo }}';
             const prNumber = Number('${{ inputs.source-pr }}');
-            const headSha = '${{ inputs.source-head }}';
+            const headSha = process.env.SOURCE_HEAD || '${{ inputs.source-head }}';
 
             const pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
             if (pr.state !== 'open') {
