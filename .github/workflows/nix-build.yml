@@ -131,9 +131,10 @@ jobs:
             nix-path = nixpkgs=channel:nixos-unstable
             keep-env-derivations = true
             keep-outputs = true
-            max-jobs = auto
-            # cores = 0 ran 16 compilers (4 jobs x 4 vCPU) on the 16 GB runner; after a
-            # nixpkgs bump it thrashed silently until the 6h kill.
+            # max-jobs=auto(4) x cores=2 still ran 8 compilers on the 4 vCPU runner;
+            # after a nixpkgs bump that oversubscription thrashed memory and the job
+            # died silently at the 6h kill. 2x2 matches the runner exactly.
+            max-jobs = 2
             cores = 2
       - uses: nix-community/cache-nix-action@v7
         with:
