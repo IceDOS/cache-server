@@ -446,6 +446,9 @@ jobs:
           AWS_REGION: eu-central-1
           AWS_DEFAULT_REGION: eu-central-1
           ICEDOS_WORKBASE: /mnt/icedos-work
+          # Single-user nix has no daemon, so max-jobs is per process: parallel configs
+          # multiplied it and OOM-killed the runner. Serial keeps 2x2 global.
+          ICEDOS_MAX_PARALLEL: 1
           ICEDOS_FORCE_BUILD: ${{ inputs.force && '1' || '' }}
 
       # App installation tokens expire after 1h; long builds outlive them, so
