@@ -124,7 +124,9 @@ jobs:
           root-safe-haven: '10240'
       # Single-user: the runner owns /nix, so cache-nix-action can restore into it.
       # Multi-user install-nix-action leaves it root-owned -> "Permission denied".
-      - uses: nixbuild/nix-quick-install-action@v30
+      # v35 ships Nix 2.34; 2.24 (v30) buffered substitution downloads without bound and
+      # OOM-killed the runner fetching spotube-git's 2.7 GiB of Android SDK + maven deps.
+      - uses: nixbuild/nix-quick-install-action@v35
         with:
           nix_conf: |
             experimental-features = nix-command flakes

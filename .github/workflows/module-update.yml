@@ -75,7 +75,7 @@ jobs:
           repository: IceDOS/core
           path: .icedos-core
 
-      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: nixbuild/nix-quick-install-action@v35
         with:
           nix_conf: |
             experimental-features = nix-command flakes
