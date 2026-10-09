@@ -64,6 +64,32 @@ trap clean_workbase EXIT
 
 max_parallel="${ICEDOS_MAX_PARALLEL:-6}"
 
+# Substituters the config build uses; the batched prebuild below must see the same.
+ICEDOS_SUBSTITUTERS="$ICEDOS_CACHE_URL?priority=100 https://attic.xuyh0120.win/lantian?priority=90"
+ICEDOS_TRUSTED_KEYS="$(cat "$root/nix-public.pem") lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc="
+
+# A nix process holding ~1300 goals grew ~24 MB per finished build, so spotube-git's
+# ~1600 maven fetches OOM the 16 GB runner. Fresh processes per batch cap that.
+prebuild_batch="${ICEDOS_PREBUILD_BATCH:-150}"
+prebuild_in_batches() {
+  local drv="$1" d i
+  local -a opts=(--option extra-substituters "$ICEDOS_SUBSTITUTERS"
+    --option extra-trusted-public-keys "$ICEDOS_TRUSTED_KEYS")
+  local -A pending=()
+  while read -r d; do pending[$d]=1; done < <(
+    nix-store --realise --dry-run "${opts[@]}" "$drv" 2>&1 | sed -n 's|^ *\(/nix/store/.*\.drv\)$|\1|p')
+  [ "${#pending[@]}" -gt "$prebuild_batch" ] || return 0
+  # --requisites lists dependencies first, so each batch only builds its own members.
+  local -a ordered=()
+  while read -r d; do
+    if [ -n "${pending[$d]:-}" ]; then ordered+=("$d"); fi
+  done < <(nix-store --query --requisites "$drv")
+  echo "prebuilding ${#ordered[@]} derivations in batches of $prebuild_batch"
+  for ((i = 0; i < ${#ordered[@]}; i += prebuild_batch)); do
+    nix-store --realise "${opts[@]}" "${ordered[@]:i:prebuild_batch}" >/dev/null
+  done
+}
+
 # ICEDOS_BUILD_CONFIGS (external mode): space-separated basenames of the configs
 # affected by the source repo, derived by nix-build.yml. The base warm-up always
 # runs: it seeds BASE_LOCK with the pinned rev and realizes the shared closure.
@@ -135,7 +161,7 @@ PYEOF
 # config.toml. Pushes go behind a flock: the 1-core server only chunks one closure at a time.
 build_and_push() {
   local cfg="$1"
-  local name work out result top_path stage pushed attempt push_rc push_out eval_err
+  local name work out result top_path top_drv stage pushed attempt push_rc push_out eval_err
   name="$(basename "$cfg" .toml)"
   work="$workbase/$name"
   out="$work/out"
@@ -210,6 +236,15 @@ build_and_push() {
     fi
 
     echo "building $cfg..."
+
+    # Force and heal runs skip the eval above; genflake here is what --build runs anyway.
+    [ -f "$work/build/.state/flake.nix" ] || timeout 15m env TMPDIR="$out" nix run path:.#icedos -- --genflake-only
+    top_drv=$(timeout 10m nix eval --raw --no-write-lock-file \
+      --extra-experimental-features "nix-command flakes pipe-operators" \
+      "path:$work/build/.state#nixosConfigurations.icedos.config.system.build.toplevel.drvPath") || top_drv=""
+    if [ -n "$top_drv" ]; then
+      TMPDIR="$out" prebuild_in_batches "$top_drv"
+    fi
 
     TMPDIR="$out" nix run path:.#icedos -- --build \
       --nh-args --no-nom \
