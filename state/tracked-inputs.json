@@ -17,7 +17,7 @@
     "repo": ""
   },
   "icedos-github_icedos_apps": {
-    "rev": "eb127e4d01535a0951c7ad19fbc151700ca9ff22",
+    "rev": "68449f0818532d32a13b3e233e0a68b88daf2676",
     "repo": ""
   },
   "icedos-github_icedos_hardware": {
@@ -25,7 +25,7 @@
     "repo": ""
   },
   "icedos-github_icedos_kde": {
-    "rev": "f6302db76ec09e815e73ef81002be82a114a49fc",
+    "rev": "de52d98bcc1cf3f8fc53ead4bc6646136ad63cd8",
     "repo": ""
   },
   "icedos-github_icedos_providers": {
