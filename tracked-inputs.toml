@@ -36,6 +36,10 @@ name = "icedos-github_icedos_apps"
 configs = ["00-base.toml", "05-common.toml"]
 
 [[trackedInputs]]
+name = "icedos-github_icedos_gaming"
+configs = ["05-common.toml"]
+
+[[trackedInputs]]
 name = "icedos-github_icedos_hardware"
 configs = ["00-base.toml", "10-cuda.toml", "20-rocm.toml", "50-cachyos-kernel-v3.toml"]
 

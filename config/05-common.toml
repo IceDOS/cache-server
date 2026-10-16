@@ -3,12 +3,18 @@ url = "github:icedos/apps"
 fetchDependencies = false
 modules = [
   "ambiled",
-  "prefixer",
-  "sekirofpsunlock",
   "steam",
   "steam-headless",
   "sunshine-headless",
   "sunshine",
+]
+
+[[icedos.repositories]]
+url = "github:icedos/gaming"
+fetchDependencies = false
+modules = [
+  "prefixer",
+  "sekirofpsunlock",
 ]
 
 [[icedos.repositories]]
