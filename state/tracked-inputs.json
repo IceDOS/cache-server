@@ -17,15 +17,15 @@
     "repo": ""
   },
   "icedos-github_icedos_apps": {
-    "rev": "c7fed8529874def6ab211aab4b0805729a1c7c2a",
+    "rev": "b506de7d5547832c8e67e59748259372d951cd7d",
     "repo": ""
   },
   "icedos-github_icedos_hardware": {
-    "rev": "fd94461653125a389b54eb50ae976e8743eb9c45",
+    "rev": "9df2554265737e5865800a299a6765005935403c",
     "repo": ""
   },
   "icedos-github_icedos_kde": {
-    "rev": "d0d7252f1ebb6ac7a3eaef23a48f8aa4621ce992",
+    "rev": "44ae36eb6f87513a943e9975e18c0585fe3385af",
     "repo": ""
   },
   "icedos-github_icedos_providers": {
@@ -33,7 +33,7 @@
     "repo": ""
   },
   "icedos-github_icedos_tweaks": {
-    "rev": "aecc0335e62253e80f5c614a575499531fab1f14",
+    "rev": "8c4f3ae3d6ae16cc9dac3ed29bcdc0ea555951be",
     "repo": ""
   },
   "icedos": {
