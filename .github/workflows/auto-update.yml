@@ -76,7 +76,7 @@ jobs:
 
               (
                 cd "$work"
-                nix run .#icedos -- --genflake-only 2>&1 || exit 1
+                nix run .#icedos -- --genflake-only --keep-flake 2>&1 || exit 1
                 cd build/.state
                 nix flake lock 2>&1 || exit 1
               ) || { rm -rf "$work"; continue; }

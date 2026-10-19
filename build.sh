@@ -211,7 +211,7 @@ build_and_push() {
     top_path=""
     if [ -z "${ICEDOS_HEAL:-}" ] && [ -n "${ICEDOS_CACHE_URL:-}" ] && [ -z "${ICEDOS_FORCE_BUILD:-}" ]; then
       # Evals are silent — a stalled fetch here hangs the whole fan-out, so bound them.
-      if timeout 15m env TMPDIR="$out" nix run path:.#icedos -- --genflake-only; then
+      if timeout 15m env TMPDIR="$out" nix run path:.#icedos -- --genflake-only --keep-flake; then
         # Write the resolved lock: the skip check eval reads it, and CI pins the built
         # input hashes from build/locks (gitignored).
         timeout 10m nix --extra-experimental-features "nix-command flakes" flake lock "$work/build/.state"
@@ -238,7 +238,7 @@ build_and_push() {
     echo "building $cfg..."
 
     # Force and heal runs skip the eval above; genflake here is what --build runs anyway.
-    [ -f "$work/build/.state/flake.nix" ] || timeout 15m env TMPDIR="$out" nix run path:.#icedos -- --genflake-only
+    [ -f "$work/build/.state/flake.nix" ] || timeout 15m env TMPDIR="$out" nix run path:.#icedos -- --genflake-only --keep-flake
     top_drv=$(timeout 10m nix eval --raw --no-write-lock-file \
       --extra-experimental-features "nix-command flakes pipe-operators" \
       "path:$work/build/.state#nixosConfigurations.icedos.config.system.build.toplevel.drvPath") || top_drv=""
