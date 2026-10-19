@@ -65,8 +65,8 @@ trap clean_workbase EXIT
 max_parallel="${ICEDOS_MAX_PARALLEL:-6}"
 
 # Substituters the config build uses; the batched prebuild below must see the same.
-ICEDOS_SUBSTITUTERS="$ICEDOS_CACHE_URL?priority=100 https://attic.xuyh0120.win/lantian?priority=90"
-ICEDOS_TRUSTED_KEYS="$(cat "$root/nix-public.pem") lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc="
+ICEDOS_SUBSTITUTERS="$ICEDOS_CACHE_URL?priority=100 https://attic.xuyh0120.win/lantian?priority=90 https://cache.xinux.uz?priority=91"
+ICEDOS_TRUSTED_KEYS="$(cat "$root/nix-public.pem") lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc= cache.xinux.uz:BXCrtqejFjWzWEB9YuGB7X2MV4ttBur1N8BkwQRdH+0="
 
 # A nix process holding ~1300 goals grew ~24 MB per finished build, so spotube-git's
 # ~1600 maven fetches OOM the 16 GB runner. Fresh processes per batch cap that.
@@ -253,7 +253,9 @@ build_and_push() {
       --extra-substituters "$ICEDOS_CACHE_URL?priority=100" \
       --extra-trusted-public-keys "$(cat nix-public.pem)" \
       --extra-substituters "https://attic.xuyh0120.win/lantian?priority=90" \
-      --extra-trusted-public-keys "lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc="
+      --extra-trusted-public-keys "lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc=" \
+      --extra-substituters "https://cache.xinux.uz?priority=91" \
+      --extra-trusted-public-keys "cache.xinux.uz:BXCrtqejFjWzWEB9YuGB7X2MV4ttBur1N8BkwQRdH+0="
 
     shopt -s nullglob
     local results=("$out"/*/result)

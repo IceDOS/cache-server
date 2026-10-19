@@ -14,5 +14,9 @@ variant = "latest-lto-x86_64-v3"
 [icedos.hardware.kernel.cachyos]
 applyWithoutSubstituter = true
 
+[icedos.hardware.kernel.cachyos.substituters]
+primary = true
+secondary = true
+
 [icedos.system]
 version = "26.05"
