@@ -1,6 +1,6 @@
 {
   "nix-cachyos-kernel": {
-    "rev": "e5f3b46dde090718a7a02d4ea1e1cc64feb2d758",
+    "rev": "b1332396df6e880d7e3b6b451c6a74132ce8cf66",
     "repo": ""
   },
   "ambiled": "8a9a9042f77129ea5aded8a98f0804a673332c1b",
@@ -13,7 +13,7 @@
     "repo": ""
   },
   "jovian": {
-    "rev": "8151ceb4e28e27332438f949e1899f8373a3ada0",
+    "rev": "37f5cfbd0c12d5373555f5b54893bbc0f5d0ad20",
     "repo": ""
   },
   "icedos-github_icedos_apps": {
