@@ -338,6 +338,50 @@ jobs:
           repositories: ${{ inputs.source-repo }}
           permission-contents: write
           permission-pull-requests: write
+      # Gates of one repo fork from the same main and drain one at a time, so every
+      # gate after the first finds main moved and could never merge. Rebasing onto
+      # current main first makes the built head exactly what the merge lands.
+      - name: Rebase source PR onto current main
+        if: inputs.source-repo != '' && inputs.source-pr != ''
+        env:
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
+          REPO: IceDOS/${{ inputs.source-repo }}
+          PR: ${{ inputs.source-pr }}
+        run: |
+          head=${SOURCE_HEAD:-${{ inputs.source-head }}}
+          ref=$(gh api "repos/$REPO/pulls/$PR" --jq .head.ref)
+          work=$(mktemp -d)
+          cd "$work"
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:$GH_TOKEN@github.com/$REPO"
+          git fetch -q --filter=blob:none origin "+refs/heads/main:refs/remotes/origin/main" "$head"
+          if git merge-base --is-ancestor origin/main "$head"; then
+            echo "$REPO#$PR already on main"
+            exit 0
+          fi
+          git checkout -q --detach "$head"
+          # Module paths are disjoint, so a conflict means something unexpected: build
+          # the old head and let the merge guard defer as before.
+          if ! git rebase -q origin/main; then
+            git rebase --abort
+            echo "::warning::$REPO#$PR does not rebase cleanly onto main; building it unrebased"
+            exit 0
+          fi
+          new=$(git rev-parse HEAD)
+          # The lease loses to an updater push that landed meanwhile; build that head.
+          if ! git push -q --force-with-lease="refs/heads/$ref:$head" origin "HEAD:refs/heads/$ref"; then
+            echo "::warning::$ref moved during rebase; building ${head:0:12} unrebased"
+            exit 0
+          fi
+          echo "SOURCE_HEAD=$new" >>"$GITHUB_ENV"
+          echo "rebased $REPO#$PR ${head:0:12} -> ${new:0:12} onto main"
+          # The pin step reads the PR's file list; wait until GitHub sees the new head.
+          for _ in $(seq 1 30); do
+            [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$new" ] && break
+            sleep 2
+          done
       # Internal runs that move module repos (a repo bump, a nixpkgs bump, a repair
       # dispatch) pin each repo to one sha in every config and stage its package
       # configs at that sha, so the channel they publish is fully built.
@@ -782,9 +826,11 @@ jobs:
               core.warning('head moved since dispatch; skipping merge');
               return;
             }
-            const mainSha = (await github.rest.git.getRef({ owner, repo, ref: 'heads/main' })).data.object.sha;
-            if (pr.base.sha !== mainSha) {
-              core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}); skipping merge`);
+            // The build rebased the head onto main; main moving after that means the
+            // merge would land an unbuilt combination.
+            const cmp = (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `main...${headSha}` })).data;
+            if (cmp.behind_by > 0) {
+              core.warning(`main moved ${cmp.behind_by} commit(s) past the built head; skipping merge`);
               return;
             }
 
