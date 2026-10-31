@@ -21,7 +21,7 @@
     "repo": ""
   },
   "icedos-github_icedos_hardware": {
-    "rev": "8c5b1525602343b87e6090e6813b4b22e855a784",
+    "rev": "b437b3409f948de096a081a51ec4a07db4c120c7",
     "repo": ""
   },
   "icedos-github_icedos_kde": {
@@ -53,7 +53,7 @@
     "repo": "github:nix-community/plasma-manager"
   },
   "icedos-github_icedos_gaming": {
-    "rev": "b9f90f6ac1828d55374e85d8a7c1951e2b087ac7",
+    "rev": "7ec2efc8df5c7a7844ce729f41e4af9261de89b1",
     "repo": ""
   }
 }
