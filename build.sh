@@ -344,9 +344,9 @@ build_and_push() {
       # not a narinfo clients resolve to a 404.
       (
         flock 9
-        { [ ! -d "$stage/nar" ] || timeout 15m aws s3 sync "$stage/nar" "s3://$ICEDOS_S3_BUCKET/nar/" \
+        { [ ! -d "$stage/nar" ] || timeout 15m aws s3 cp --recursive "$stage/nar" "s3://$ICEDOS_S3_BUCKET/nar/" \
           --region "$AWS_REGION" --only-show-errors; } &&
-        timeout 15m aws s3 sync "$stage" "s3://$ICEDOS_S3_BUCKET/" --region "$AWS_REGION" \
+        timeout 15m aws s3 cp --recursive "$stage" "s3://$ICEDOS_S3_BUCKET/" --region "$AWS_REGION" \
           --only-show-errors --exclude '*' --include '*.narinfo'
       ) 9>"$root/build/push.lock" && {
         pushed=1
