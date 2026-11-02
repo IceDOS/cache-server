@@ -9,7 +9,9 @@ change source and pushes to S3; CloudFront serves them behind Cloudflare at
 - **AWS S3** — private bucket `icedos-nix-cache-fyi` (eu-central-1): NARs,
   narinfos, per-config locks (`locks/`), `state.lock`. 35-day lifecycle
   expiry; the weekly `heal-cache.yml` run re-pushes expired-but-current
-  paths so live closures never 404.
+  paths so live closures never 404. `cache-prune.yml` with the `stale` set
+  deletes paths outside the newest 3 merged nixpkgs revisions; narinfos younger
+  than 48 hours stay, so an open update PR keeps its pushes.
 - **CloudFront** — distribution `E1EEMYNS1YFLPR`, origin access control
   (signed reads only, no public bucket access), CachingOptimized policy.
 - **Cloudflare** — proxied CNAME `@` → CloudFront; edge TTL: 200–299 → 30d,

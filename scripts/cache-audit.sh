@@ -54,6 +54,11 @@ awk -F'\t' 'NR==FNR{ref[$2]=1;next} !($1 in ref){print $1"\t"$2}' \
   "$W/url-map.txt" "$W/nar-have.txt" >"$W/orphan-nars.txt"
 cut -f1 "$W/orphan-nars.txt" >"$W/orphan.txt"
 
+# Paths outside the newest merged nixpkgs revisions; needs the full git history.
+git log --format=%s --grep='^update(nixpkgs): ' \
+  | python3 "$(dirname "$0")/cache-stale.py" "$W/narinfo" --keep "${ICEDOS_KEEP_REVISIONS:-3}" \
+  | sort >"$W/stale.txt"
+
 bytes() { [ -s "$1" ] || { echo 0; return; }
   xargs -a "$1" grep -h '^FileSize:' 2>/dev/null | awk '{s+=$2} END{print s+0}'; }
 line() { printf '%-26s %9d %15d %9.2f\n' "$1" "$2" "$3" \
@@ -69,6 +74,7 @@ row 'TOTAL'                "$W/all.txt"
 echo
 printf '%-26s %9s %15s %9s\n' 'broken / waste' objects 'nar bytes' GiB
 row  'dangling narinfo'    "$W/dangling.txt"
+row  'stale revisions'     "$W/stale.txt"
 line 'orphan nar'          "$(wc -l <"$W/orphan.txt")" \
   "$(awk -F'\t' '{s+=$2} END{print s+0}' "$W/orphan-nars.txt")"
 echo "lists in $W/" >&2

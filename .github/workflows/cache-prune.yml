@@ -1,8 +1,8 @@
 name: Cache Prune
 
 # Deletes cache entries cache.nixos.org already serves, unsigned ones no client
-# can use, narinfos whose NAR is gone, and NARs nothing points at. Dry run
-# unless `apply` is checked.
+# can use, narinfos whose NAR is gone, NARs nothing points at, and paths outside
+# the newest 3 merged nixpkgs revisions (stale). Dry run unless `apply` is checked.
 on:
   workflow_dispatch:
     inputs:
@@ -12,6 +12,8 @@ on:
         default: upstream,unsigned,dangling,orphan
         options:
           - upstream,unsigned,dangling,orphan
+          - stale
+          - stale,upstream,unsigned,dangling,orphan
           - dangling,orphan
           - upstream,unsigned
           - upstream
@@ -40,7 +42,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
+      # cache-stale.py reads the update(nixpkgs) commits.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Audit
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
