@@ -17,11 +17,11 @@
     "repo": ""
   },
   "icedos-github_icedos_apps": {
-    "rev": "aa1de3913fc30c1737e486bb6ee3800aed89d482",
+    "rev": "10bb193478f277e67d04f8c10669f9cf7aed1344",
     "repo": ""
   },
   "icedos-github_icedos_hardware": {
-    "rev": "f4bb9b2af62439496ed80f9d2c3516dfd1bd4a2b",
+    "rev": "d6dc9f60c99b1a1b2a6f6477f685e22e09a1ff78",
     "repo": ""
   },
   "icedos-github_icedos_kde": {
@@ -41,7 +41,7 @@
     "repo": ""
   },
   "icedos-github_icedos_desktop": {
-    "rev": "26289174c8d8a1d8b4afb5d94439e8e19c31e2fd",
+    "rev": "c96c1d7379833847a443ca633008111da022e990",
     "repo": ""
   },
   "stylix": {
@@ -53,7 +53,7 @@
     "repo": "github:nix-community/plasma-manager"
   },
   "icedos-github_icedos_gaming": {
-    "rev": "57e949a5c8fac313c3634b8e3a0f53e0e24878ee",
+    "rev": "3f1b5ed78536f1465b92bb4e50332e39646dd8b0",
     "repo": ""
   }
 }
