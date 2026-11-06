@@ -1,7 +1,6 @@
 {
   config,
   icedosLib,
-  inputs,
   lib,
   pkgs,
   ...
@@ -31,8 +30,4 @@ in
   # isContainer also disables udev, which conflicts at normal priority with modules that
   # enable it (sunshine-headless's forged EDID sets hardware.display.edid.packages).
   services.udev.enable = lib.mkForce true;
-
-  # `self` is the GENERATED state flake, rewritten every run, and a path: flake's
-  # lastModified is its mtime — which re-hashes etc -> activate -> toplevel every run.
-  nix.registry.self = mkForce { flake = inputs.icedos-config; };
 }
