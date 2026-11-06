@@ -47,6 +47,16 @@ case "$probe_code" in
   *) echo "::error::cache server unhealthy (HTTP $probe_code) — aborting build so the next cycle retries against a healthy server" >&2; exit 1 ;;
 esac
 
+# Upload cache info once per run; nix drops the substituter without it.
+if [ -n "${ICEDOS_S3_BUCKET:-}" ]; then
+  printf 'StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 100\n' \
+    | aws s3 cp - "s3://$ICEDOS_S3_BUCKET/nix-cache-info" --region "${AWS_REGION:-eu-central-1}" >/dev/null 2>&1 || \
+    echo "warning: failed to upload nix-cache-info" >&2
+  mkdir -p "$root/build/roots"
+  aws s3 sync "s3://$ICEDOS_S3_BUCKET/roots/" "$root/build/roots/" --region "${AWS_REGION:-eu-central-1}" \
+    --only-show-errors 2>/dev/null || true
+fi
+
 # The work dir is baked into the closure via `icedos.configurationLocation`, so a mktemp base
 # gives every run fresh hashes for ~38 paths per config. CI pins ICEDOS_WORKBASE instead.
 workbase="${ICEDOS_WORKBASE:-}"
@@ -64,9 +74,44 @@ trap clean_workbase EXIT
 
 max_parallel="${ICEDOS_MAX_PARALLEL:-6}"
 
+# Third-party CachyOS kernel substituters: url, public-key, and signature prefix.
+CACHYOS_CACHES=(
+  "https://cache.lantian.pub/lantian lantian:WVGO7vsRMSEN+h7Lp7kv6SAmrkEXgUGbbXm7jMDjBuQ= lantian:"
+  "https://cache.xinux.uz cache.xinux.uz:BXCrtqejFjWzWEB9YuGB7X2MV4ttBur1N8BkwQRdH+0= cache.xinux.uz:"
+)
+cachyos_extra_substituters=""
+cachyos_trusted_keys=""
+cachyos_build_args=()
+for entry in "${CACHYOS_CACHES[@]}"; do
+  read -r c_url c_key _ <<<"$entry"
+  cachyos_extra_substituters="$cachyos_extra_substituters $c_url?priority=90"
+  cachyos_trusted_keys="$cachyos_trusted_keys $c_key"
+  cachyos_build_args+=(--extra-substituters "$c_url?priority=90" --extra-trusted-public-keys "$c_key")
+done
+
 # Substituters the config build uses; the batched prebuild below must see the same.
-ICEDOS_SUBSTITUTERS="$ICEDOS_CACHE_URL?priority=100 https://attic.xuyh0120.win/lantian?priority=90 https://cache.xinux.uz?priority=91"
-ICEDOS_TRUSTED_KEYS="$(cat "$root/nix-public.pem") lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc= cache.xinux.uz:BXCrtqejFjWzWEB9YuGB7X2MV4ttBur1N8BkwQRdH+0="
+ICEDOS_SUBSTITUTERS="$ICEDOS_CACHE_URL?priority=100$cachyos_extra_substituters"
+ICEDOS_TRUSTED_KEYS="$(cat "$root/nix-public.pem")$cachyos_trusted_keys"
+
+config_enables_cachyos_kernel() {
+  local cfg_path="$1"
+  python3 -c '
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        data = tomllib.load(f)
+    icedos = data.get("icedos", {})
+    sub = icedos.get("hardware", {}).get("kernel", {}).get("cachyos", {}).get("substituters", {})
+    if sub.get("primary") or sub.get("secondary"):
+        sys.exit(0)
+    for repo in icedos.get("repositories", []):
+        if "cachyos-kernel" in repo.get("modules", []):
+            sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+' "$cfg_path" 2>/dev/null
+}
 
 # A nix process holding ~1300 goals grew ~24 MB per finished build, so spotube-git's
 # ~1600 maven fetches OOM the 16 GB runner. Fresh processes per batch cap that.
@@ -157,6 +202,42 @@ print(f"unpinned {len(targets)} node(s) from the seed: {sorted(targets)}")
 PYEOF
 }
 
+# Record newest toplevel and retain previous toplevel for rollback.
+record_and_upload_root() {
+  local name="$1"
+  local top="$2"
+  [ -n "$top" ] || return 0
+
+  mkdir -p "$root/build/roots"
+  local root_file="$root/build/roots/$name"
+  local -a prev_roots=()
+  if [ -f "$root_file" ]; then
+    mapfile -t prev_roots < "$root_file"
+  elif [ -n "${ICEDOS_S3_BUCKET:-}" ]; then
+    mapfile -t prev_roots < <(aws s3 cp "s3://$ICEDOS_S3_BUCKET/roots/$name" - --region "${AWS_REGION:-eu-central-1}" 2>/dev/null || true)
+  fi
+
+  local now
+  now="$(date +%s)"
+  local -a updated=("$now $top")
+  local r line_path
+  for r in "${prev_roots[@]}"; do
+    [ -n "$r" ] || continue
+    line_path="${r##* }"
+    [ "$line_path" = "$top" ] && continue
+    updated+=("$r")
+    [ "${#updated[@]}" -ge 20 ] && break
+  done
+
+  printf '%s\n' "${updated[@]}" > "$root_file"
+
+  # Upload to S3 only for builds that reach main; unmerged PR builds keep roots local.
+  if [ -n "${ICEDOS_RECORD_ROOTS:-}" ] && [ -n "${ICEDOS_S3_BUCKET:-}" ]; then
+    aws s3 cp "$root_file" "s3://$ICEDOS_S3_BUCKET/roots/$name" --region "${AWS_REGION:-eu-central-1}" >/dev/null 2>&1 || \
+      echo "$name: warning — could not upload prune root" >&2
+  fi
+}
+
 # Build one config in an isolated, git-less work dir so the flake eval sees the untracked
 # config.toml. Pushes go behind a flock: the 1-core server only chunks one closure at a time.
 build_and_push() {
@@ -230,6 +311,7 @@ build_and_push() {
 
       if [ -n "$top_path" ] && is_path_cached "$top_path"; then
         echo "$cfg: top-level closure already in cache ($top_path), skipping build"
+        record_and_upload_root "$name" "$top_path"
         echo ok >"$root/build/status/$name"
         return 0
       fi
@@ -252,10 +334,7 @@ build_and_push() {
       -L \
       --extra-substituters "$ICEDOS_CACHE_URL?priority=100" \
       --extra-trusted-public-keys "$(cat nix-public.pem)" \
-      --extra-substituters "https://attic.xuyh0120.win/lantian?priority=90" \
-      --extra-trusted-public-keys "lantian:EeAUQ+W+6r7EtwnmYjeVwx5kOGEBpjlBfPlzGlTNvHc=" \
-      --extra-substituters "https://cache.xinux.uz?priority=91" \
-      --extra-trusted-public-keys "cache.xinux.uz:BXCrtqejFjWzWEB9YuGB7X2MV4ttBur1N8BkwQRdH+0="
+      "${cachyos_build_args[@]}"
 
     shopt -s nullglob
     local results=("$out"/*/result)
@@ -280,10 +359,25 @@ build_and_push() {
     stage="$out/push-cache"
     mkdir -p "$stage"
     mapfile -t closure_paths < <(nix path-info -r "$result")
+
+    # Exclude marked prebuilt or unpack-only packages from being uploaded to S3.
+    python3 "$root/scripts/seed-exclusions.py" --stage "$stage" --cfg "$cfg" \
+      < <(printf '%s\n' "${closure_paths[@]}") >/dev/null
+
+    probe_caches=("https://cache.nixos.org cache.nixos.org-1:")
+    if config_enables_cachyos_kernel "$cfg"; then
+      for entry in "${CACHYOS_CACHES[@]}"; do
+        read -r c_url _ c_sig <<<"$entry"
+        probe_caches+=("$c_url $c_sig")
+      done
+    fi
+
     printf '%s\n' "${closure_paths[@]}" | \
-      ICEDOS_CACHE_URL="$ICEDOS_CACHE_URL" ICEDOS_KEY_NAME="${ICEDOS_KEY_NAME:-}" stage="$stage" pool="$root/build/seedpool" \
+      ICEDOS_CACHE_URL="$ICEDOS_CACHE_URL" ICEDOS_KEY_NAME="${ICEDOS_KEY_NAME:-}" \
+      PROBE_CACHES="$(printf '%s\n' "${probe_caches[@]}")" stage="$stage" pool="$root/build/seedpool" \
       xargs -P 8 -I{} bash -c '
       h=$(basename "{}" | cut -c1-32)
+      [ -f "$stage/$h.narinfo" ] && exit 0
       # The pool holds what earlier configs in this run pushed; the CDN can still
       # be serving a stale miss for those.
       cp "$pool/$h.narinfo" "$stage/$h.narinfo" 2>/dev/null && exit 0
@@ -293,18 +387,23 @@ build_and_push() {
         exit 0
       fi
       code=000
-      for i in 1 2 3; do
-        code=$(curl -s -o "$stage/$h.tmp" -w "%{http_code}" --max-time 20 "https://cache.nixos.org/$h.narinfo")
-        [ "$code" = 000 ] || break
-        sleep $((i * 2))
-      done
-      # a failed probe is not proof of absence; pushing beats permanent skip
-      if [ "$code" = 200 ]; then
-        mv "$stage/$h.tmp" "$stage/$h.narinfo"
-      else
+      while read -r u sig_prefix; do
+        [ -n "$u" ] || continue
+        for i in 1 2 3; do
+          code=$(curl -s -o "$stage/$h.tmp" -w "%{http_code}" --max-time 20 "$u/$h.narinfo")
+          [ "$code" = 000 ] || break
+          sleep $((i * 2))
+        done
+        # a failed probe is not proof of absence; pushing beats permanent skip
+        if [ "$code" = 200 ] && [ -s "$stage/$h.tmp" ]; then
+          if [ -z "$sig_prefix" ] || grep -q "^Sig:.*[ :]$sig_prefix" "$stage/$h.tmp"; then
+            mv "$stage/$h.tmp" "$stage/$h.narinfo"
+            exit 0
+          fi
+        fi
         rm -f "$stage/$h.tmp"
-        printf "%s\n" "{}"
-      fi
+      done <<<"$PROBE_CACHES"
+      printf "%s\n" "{}"
     ' >"$out/missing-paths" || true
     mapfile -t missing_paths < "$out/missing-paths"
     find "$stage" -maxdepth 1 -name '*.narinfo' -printf '%f\n' >"$out/seeded"
@@ -363,14 +462,12 @@ build_and_push() {
     # Feed the pool so later configs seed these without waiting on the CDN.
     cp "$stage"/*.narinfo "$root/build/seedpool/" 2>/dev/null || true
 
-    # nix never writes nix-cache-info to S3; nix drops the substituter without it
-    printf 'StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 100\n' \
-      | aws s3 cp - "s3://$ICEDOS_S3_BUCKET/nix-cache-info" --region "$AWS_REGION" >/dev/null 2>&1 || \
-      echo "warning: failed to upload nix-cache-info" >&2
     # Persist the config's resolved lock so the weekly heal job can restore
     # exactly this closure if the lifecycle rule expires any of its paths.
     aws s3 cp "$root/build/locks/$name.lock" "s3://$ICEDOS_S3_BUCKET/locks/$name.lock" --region "$AWS_REGION" >/dev/null 2>&1 || \
       echo "$cfg: warning — could not upload the config lock" >&2
+
+    record_and_upload_root "$name" "$result"
 
     echo "$cfg successfully built and uploaded to the cache server!"
   ) && echo ok >"$root/build/status/$name" || echo fail >"$root/build/status/$name"

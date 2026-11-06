@@ -24,6 +24,10 @@ echo "syncing narinfos from s3://$BUCKET ..." >&2
 aws s3 sync "s3://$BUCKET/" "$W/narinfo/" --region "$REGION" \
   --exclude '*' --include '*.narinfo' --only-show-errors
 
+echo "syncing roots from s3://$BUCKET ..." >&2
+mkdir -p "$W/roots"
+aws s3 sync "s3://$BUCKET/roots/" "$W/roots/" --region "$REGION" --only-show-errors
+
 g() { grep -r --include='*.narinfo' "$@" "$W/narinfo" | sort; }
 find "$W/narinfo" -name '*.narinfo' | sort  >"$W/all.txt"
 g -l '^Sig: cache\.nixos\.org-1:'           >"$W/upstream.txt"
@@ -54,9 +58,10 @@ awk -F'\t' 'NR==FNR{ref[$2]=1;next} !($1 in ref){print $1"\t"$2}' \
   "$W/url-map.txt" "$W/nar-have.txt" >"$W/orphan-nars.txt"
 cut -f1 "$W/orphan-nars.txt" >"$W/orphan.txt"
 
-# Paths outside the newest merged nixpkgs revisions; needs the full git history.
-git log --format=%s --grep='^update(nixpkgs): ' \
-  | python3 "$(dirname "$0")/cache-stale.py" "$W/narinfo" --keep "${ICEDOS_KEEP_REVISIONS:-3}" \
+# Paths outside the active per-config roots and rollback toplevels.
+python3 "$(dirname "$0")/cache-stale.py" "$W/narinfo" "$W/roots" \
+  --keep "${ICEDOS_KEEP_ROOTS:-${ICEDOS_KEEP_REVISIONS:-2}}" \
+  ${ICEDOS_MIN_LIVE_RATIO:+--min-live-ratio "$ICEDOS_MIN_LIVE_RATIO"} \
   | sort >"$W/stale.txt"
 
 bytes() { [ -s "$1" ] || { echo 0; return; }

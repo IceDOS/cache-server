@@ -27,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: nixbuild/nix-quick-install-action@v35
         with:
           nix_conf: |
@@ -57,6 +59,56 @@ jobs:
           revs_json='{}'
 
           while IFS= read -r name; do
+            # Throttled inputs advance at most once per configured min-interval.
+            skip_info=$(TRACKED_NAME="$name" python3 -c "
+          import tomllib, json, os, sys, time, subprocess
+
+          name = os.environ['TRACKED_NAME']
+          with open('tracked-inputs.toml', 'rb') as f:
+              data = tomllib.load(f)
+
+          min_interval = None
+          for entry in data.get('trackedInputs', []):
+              if entry.get('name') == name:
+                  val = entry.get('min-interval') or entry.get('minInterval') or entry.get('interval')
+                  if val:
+                      s = str(val).strip().lower()
+                      if s.endswith('h'): min_interval = float(s[:-1]) * 3600
+                      elif s.endswith('d'): min_interval = float(s[:-1]) * 86400
+                      elif s.endswith('m'): min_interval = float(s[:-1]) * 60
+                      elif s.endswith('s'): min_interval = float(s[:-1])
+                      else: min_interval = float(s)
+                  break
+
+          if min_interval:
+              last_ts = None
+              try:
+                  with open('state/tracked-inputs.json', 'r') as f:
+                      state = json.load(f)
+                  st = state.get(name)
+                  if isinstance(st, dict) and 'updated_at' in st:
+                      last_ts = float(st['updated_at'])
+              except Exception:
+                  pass
+              if last_ts is None:
+                  res = subprocess.run(
+                      ['git', 'log', '-1', '--format=%ct', f'--grep=^update(inputs): {name}'],
+                      capture_output=True, text=True
+                  )
+                  out = res.stdout.strip()
+                  if out.isdigit():
+                      last_ts = float(out)
+              if last_ts is not None and (time.time() - last_ts) < min_interval:
+                  elapsed_h = (time.time() - last_ts) / 3600
+                  interval_h = min_interval / 3600
+                  print(f'skip:{elapsed_h:.1f}h:{interval_h:.0f}h')
+          ")
+            if [[ "$skip_info" == skip:* ]]; then
+              IFS=':' read -r _ elapsed_str int_str <<<"$skip_info"
+              echo "$name: updated ${elapsed_str} ago (< ${int_str} min-interval); skipping"
+              continue
+            fi
+
             configs_json=$(TRACKED_NAME="$name" python3 -c "
           import tomllib, json, os
           with open('tracked-inputs.toml', 'rb') as f:
@@ -283,7 +335,7 @@ jobs:
               const detail = r.old ? `${r.name}: ${r.old.slice(0, 12)} -> ${r.rev.slice(0, 12)}` : `${r.name}: ${r.rev.slice(0, 12)}`;
               const files = [{
                 path: 'state/tracked-inputs.json',
-                content: JSON.stringify({ ...base, [r.key]: { rev: r.rev, repo: (base[r.key] && base[r.key].repo) || '' } }, null, 2) + '\n',
+                content: JSON.stringify({ ...base, [r.key]: { rev: r.rev, repo: (base[r.key] && base[r.key].repo) || '', updated_at: Math.floor(Date.now() / 1000) } }, null, 2) + '\n',
               }];
 
               // Root-lock inputs (icedos = github:IceDOS/core) resolve from the branch's

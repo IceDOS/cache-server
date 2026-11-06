@@ -26,6 +26,7 @@ configs = ["05-common.toml"]
 [[trackedInputs]]
 name = "plasmazones"
 configs = ["40-kde.toml"]
+min-interval = "24h"
 
 [[trackedInputs]]
 name = "jovian"

@@ -24,6 +24,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: eu-central-1
           AWS_DEFAULT_REGION: eu-central-1
+          ICEDOS_MIN_LIVE_RATIO: ${{ vars.ICEDOS_MIN_LIVE_RATIO || '' }}
         run: |
           ./scripts/cache-audit.sh cache-audit | tee report.txt
           {

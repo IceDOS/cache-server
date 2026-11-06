@@ -52,6 +52,7 @@ jobs:
         run: nix run .#build
         env:
           ICEDOS_HEAL: 1
+          ICEDOS_RECORD_ROOTS: 1
           ICEDOS_SUBSTITUTER: ${{ vars.ICEDOS_SUBSTITUTER }}
           ICEDOS_SIGNING_KEY: ${{ secrets.ICEDOS_SIGNING_KEY }}
           ICEDOS_S3_URL: "s3://icedos-nix-cache-fyi?region=eu-central-1"

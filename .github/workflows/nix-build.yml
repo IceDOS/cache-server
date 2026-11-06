@@ -496,6 +496,7 @@ jobs:
           # multiplied it and OOM-killed the runner. Serial keeps 2x2 global.
           ICEDOS_MAX_PARALLEL: 1
           ICEDOS_FORCE_BUILD: ${{ inputs.force && '1' || '' }}
+          ICEDOS_RECORD_ROOTS: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.source-pr == '') && '1' || '' }}
 
       # App installation tokens expire after 1h; long builds outlive them, so
       # every post-build step re-mints here.
@@ -576,8 +577,8 @@ jobs:
               // PRs and make them stale.
               const fold = (process.env.ICEDOS_FOLD || '').split(/\s+/).filter(Boolean);
               const entries = Object.values(built).filter((r) => fold.includes(r.name));
-              // {rev, repo} lets consumers guard the name match against the host repo.
-              for (const r of entries) file[r.key] = { rev: r.rev, repo: r.repo || '' };
+              // {rev, repo, updated_at} lets consumers guard the match and enforce update intervals.
+              for (const r of entries) file[r.key] = { rev: r.rev, repo: r.repo || '', updated_at: Math.floor(Date.now() / 1000) };
               const content = JSON.stringify(file, null, 2) + '\n';
               const blob = (await github.rest.git.createBlob({ owner, repo, content, encoding: 'utf-8' })).data.sha;
               treeEntries = [{ path: 'state/tracked-inputs.json', mode: '100644', type: 'blob', sha: blob }];
@@ -807,6 +808,7 @@ jobs:
       # head, so a green run means the module repo's main can advance. Same guards:
       # a moved head/base defers to the updater's next cycle, which re-forks.
       - name: Merge source PR after successful build
+        id: merge-source
         if: inputs.source-repo != '' && inputs.source-pr != ''
         uses: actions/github-script@v7
         with:
@@ -844,12 +846,25 @@ jobs:
               core.warning(`merge failed: ${e.message}`);
               return;
             }
+            core.setOutput('merged', 'true');
             core.info(`merged ${repo} PR #${prNumber} into main (${headSha.slice(0, 12)})`);
 
             // A previously failed build's status comment is stale once we merge.
             const comments = (await github.rest.issues.listComments({ owner, repo, issue_number: prNumber })).data;
             const stale = comments.find(c => c.body?.includes('<!-- icedos-cache-build-status -->'));
             if (stale) await github.rest.issues.deleteComment({ owner, repo, comment_id: stale.id });
+
+      - name: Upload prune roots to S3 after merge
+        if: (inputs.source-pr == '' && ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || steps.merge.outputs.merged == 'true')) || steps.merge-source.outputs.merged == 'true'
+        run: |
+          if [ -d build/roots ]; then
+            aws s3 sync build/roots/ "s3://icedos-nix-cache-fyi/roots/" --region eu-central-1
+          fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-central-1
+          AWS_DEFAULT_REGION: eu-central-1
       - name: Report failure
         if: failure() && github.event_name != 'pull_request'
         uses: actions/github-script@v7

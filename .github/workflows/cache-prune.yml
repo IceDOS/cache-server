@@ -2,8 +2,11 @@ name: Cache Prune
 
 # Deletes cache entries cache.nixos.org already serves, unsigned ones no client
 # can use, narinfos whose NAR is gone, NARs nothing points at, and paths outside
-# the newest 3 merged nixpkgs revisions (stale). Dry run unless `apply` is checked.
+# the active per-config roots. Dry run unless `apply` is checked.
 on:
+  schedule:
+    # Monday 01:00 UTC, safely before heal-cache at Monday 04:23 UTC.
+    - cron: "0 1 * * 1"
   workflow_dispatch:
     inputs:
       sets:
@@ -12,6 +15,7 @@ on:
         default: upstream,unsigned,dangling,orphan
         options:
           - upstream,unsigned,dangling,orphan
+          - stale,dangling,orphan
           - stale
           - stale,upstream,unsigned,dangling,orphan
           - dangling,orphan
@@ -26,8 +30,11 @@ on:
         default: false
 
 run-name: >-
-  ${{ inputs.apply && format('prune: DELETE {0}', inputs.sets)
-      || format('prune: dry run {0}', inputs.sets) }}
+  ${{ github.event_name == 'schedule'
+      && ((vars.PRUNE_SCHEDULED_APPLY == 'true' && 'prune: scheduled weekly DELETE stale,dangling,orphan')
+          || 'prune: scheduled weekly dry run stale,dangling,orphan')
+      || (inputs.apply && format('prune: DELETE {0}', inputs.sets)
+          || format('prune: dry run {0}', inputs.sets)) }}
 
 permissions:
   contents: read
@@ -42,16 +49,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      # cache-stale.py reads the update(nixpkgs) commits.
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Audit
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: eu-central-1
           AWS_DEFAULT_REGION: eu-central-1
+          ICEDOS_MIN_LIVE_RATIO: ${{ vars.ICEDOS_MIN_LIVE_RATIO || '' }}
         run: ./scripts/cache-audit.sh cache-audit | tee audit.txt
       - name: Prune
         env:
@@ -59,12 +64,27 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: eu-central-1
           AWS_DEFAULT_REGION: eu-central-1
+          PRUNE_SETS: ${{ github.event_name == 'schedule' && 'stale,dangling,orphan' || inputs.sets }}
         run: |
+          apply_arg=()
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "${{ vars.PRUNE_SCHEDULED_APPLY }}" = "true" ]; then
+              apply_arg=(--apply)
+            else
+              echo "PRUNE_SCHEDULED_APPLY is not 'true'; scheduled run defaults to dry run"
+            fi
+          elif [ "${{ inputs.apply }}" = "true" ]; then
+            apply_arg=(--apply)
+          fi
           ./scripts/cache-prune.sh cache-audit \
-            --sets '${{ inputs.sets }}' ${{ inputs.apply && '--apply' || '' }} \
+            --sets "$PRUNE_SETS" "${apply_arg[@]}" \
             2>&1 | tee prune.txt
           {
-            echo '### Cache prune (${{ inputs.apply && 'applied' || 'dry run' }})'
+            if [ "${#apply_arg[@]}" -gt 0 ]; then
+              echo "### Cache prune (applied)"
+            else
+              echo "### Cache prune (dry run)"
+            fi
             echo '```'
             cat audit.txt prune.txt
             echo '```'

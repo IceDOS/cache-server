@@ -21,10 +21,25 @@ done
 : >"$W/orphan-drop.txt"
 for s in ${SETS//,/ }; do
   [ -f "$W/$s.txt" ] || { echo "no $W/$s.txt; run cache-audit.sh first" >&2; exit 1; }
+  if [ "$s" = stale ] && { [ ! -d "$W/roots" ] || [ -z "$(ls -A "$W/roots" 2>/dev/null)" ]; }; then
+    echo "no roots in $W/roots; refusing to prune stale" >&2
+    exit 1
+  fi
   # orphan.txt holds nar keys, every other set holds narinfo files.
   if [ "$s" = orphan ]; then cat "$W/$s.txt" >>"$W/orphan-drop.txt"
   else cat "$W/$s.txt" >>"$W/drop.txt"; fi
 done
+
+# Active roots are never deleted under any set.
+if [ -d "$W/roots" ]; then
+  while read -r r; do
+    [ -n "$r" ] || continue
+    name="$(basename "$r")"
+    hash="${name:0:32}"
+    grep -v "/$hash\.narinfo$" "$W/drop.txt" >"$W/drop.tmp" 2>/dev/null && mv "$W/drop.tmp" "$W/drop.txt" || true
+  done < <(cat "$W/roots"/* 2>/dev/null || true)
+fi
+
 sort -u -o "$W/drop.txt" "$W/drop.txt"
 sort -u -o "$W/orphan-drop.txt" "$W/orphan-drop.txt"
 comm -23 "$W/all.txt" "$W/drop.txt" >"$W/keep.txt"
