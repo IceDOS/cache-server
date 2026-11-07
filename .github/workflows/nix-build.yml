@@ -556,26 +556,57 @@ jobs:
               return;
             }
 
-            // Base moved: this build validated an outdated main. Trigger the
-            // re-fork now (auto-update's upsert is idempotent) instead of
-            // idling until the next hourly cycle.
+            const fold = (process.env.ICEDOS_FOLD || '').split(/\s+/).filter(Boolean);
+            const readJson = async (ref) => JSON.parse(Buffer.from((await github.rest.repos.getContent({
+              owner, repo, path: 'state/tracked-inputs.json', ref,
+            })).data.content, 'base64').toString('utf8'));
+            const revOf = (v) => (v && typeof v === 'object' ? v.rev : v) || '';
+
+            // Base moved: this build validated an outdated main. It still holds when main
+            // only advanced inputs whose configs this PR does not build; otherwise re-fork.
             const mainSha = (await github.rest.git.getRef({ owner, repo, ref: 'heads/main' })).data.object.sha;
-            if (pr.base.sha !== mainSha) {
-              core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}); dispatching auto-update to re-fork`);
-              core.setOutput('refork', 'true');
-              return;
+            const moved = pr.base.sha !== mainSha;
+            let mainFile = null;
+            if (moved) {
+              const changedFiles = async (base, head) =>
+                (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${base}...${head}` }))
+                  .data.files.map((f) => f.filename);
+              const onlyState = (files) => files.every((f) => f === 'state/tracked-inputs.json');
+              let disjoint = false;
+              if (fold.length > 0
+                  && onlyState(await changedFiles(pr.base.sha, mainSha))
+                  && onlyState(await changedFiles(pr.base.sha, pr.head.sha))) {
+                const [baseFile, mainNow] = [await readJson(pr.base.sha), await readJson(mainSha)];
+                const keys = new Set([...Object.keys(baseFile), ...Object.keys(mainNow)]);
+                const advanced = [...keys].filter((k) => revOf(baseFile[k]) !== revOf(mainNow[k]));
+                const { execFileSync } = require('child_process');
+                const affected = (names) => JSON.parse(execFileSync('python3', ['scripts/affected-configs.py', ...names], { encoding: 'utf8' }));
+                const ours = affected(fold);
+                const theirs = affected(advanced);
+                disjoint = !ours.includes('*') && !theirs.includes('*') && !ours.some((c) => theirs.includes(c));
+                core.info(`main advanced [${advanced.join(' ')}] -> configs [${theirs.join(' ')}]; this PR -> [${ours.join(' ')}]`);
+                if (disjoint) mainFile = mainNow;
+              }
+              if (!disjoint) {
+                core.warning(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}) into this PR's configs; dispatching auto-update to re-fork`);
+                core.setOutput('refork', 'true');
+                return;
+              }
+              core.info(`main moved (${pr.base.sha.slice(0, 12)} -> ${mainSha.slice(0, 12)}) only outside this PR's configs; merging onto it`);
             }
 
             // Fold the revs the build actually resolved into the bookkeeping file; a
             // build-only change, so the cached closures still match main exactly.
             const built = JSON.parse(fs.readFileSync('build/built-revs.json', 'utf8'));
             let treeEntries = [];
-            if (Object.keys(built).length > 0) {
-              const file = JSON.parse(fs.readFileSync('state/tracked-inputs.json', 'utf8'));
+            if (Object.keys(built).length > 0 || moved) {
+              const branchFile = JSON.parse(fs.readFileSync('state/tracked-inputs.json', 'utf8'));
+              // On a moved main, start from main's file and carry over only this PR's inputs.
+              const file = moved ? mainFile : branchFile;
+              if (moved) for (const k of Object.keys(branchFile)) if (fold.some((n) => k === n || k.endsWith(`-${n}`))) file[k] = branchFile[k];
               // Fold only what this PR advances (ICEDOS_FOLD, from the seed step):
               // bystander revs the build resolved fresh would leapfrog other open
               // PRs and make them stale.
-              const fold = (process.env.ICEDOS_FOLD || '').split(/\s+/).filter(Boolean);
               const entries = Object.values(built).filter((r) => fold.includes(r.name));
               // {rev, repo, updated_at} lets consumers guard the match and enforce update intervals.
               for (const r of entries) file[r.key] = { rev: r.rev, repo: r.repo || '', updated_at: Math.floor(Date.now() / 1000) };
@@ -589,7 +620,7 @@ jobs:
             // Nothing to fold: the branch already matches what was built — merge it as-is.
             let shaToMerge = pr.head.sha;
             if (treeEntries.length > 0) {
-              const tree = await github.rest.git.createTree({ owner, repo, base_tree: pr.head.sha, tree: treeEntries });
+              const tree = await github.rest.git.createTree({ owner, repo, base_tree: moved ? mainSha : pr.head.sha, tree: treeEntries });
               const mainTreeSha = (await github.rest.repos.getCommit({ owner, repo, ref: mainSha })).data.commit.tree.sha;
               if (tree.data.sha === mainTreeSha) {
                 // Folding the build's revs reverted the branch to main: the PR would
@@ -599,7 +630,7 @@ jobs:
                 return;
               }
               const headTree = (await github.rest.repos.getCommit({ owner, repo, ref: pr.head.sha })).data.commit.tree.sha;
-              if (tree.data.sha === headTree) {
+              if (!moved && tree.data.sha === headTree) {
                 // Identical content: pushing would fire a synchronize event and loop
                 // the build queue forever — merge the branch as-is.
                 core.info('fold matches the branch tree; nothing to push');
