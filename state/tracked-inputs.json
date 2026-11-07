@@ -37,8 +37,9 @@
     "repo": ""
   },
   "icedos": {
-    "rev": "f0a4c49384d68690ccd2a1ba07c5c6783f83639d",
-    "repo": ""
+    "rev": "11b1ba94f5bef94087b749fa2bb9564af071cf42",
+    "repo": "",
+    "updated_at": 1794010074
   },
   "icedos-github_icedos_desktop": {
     "rev": "e4a7077ae9cedadbf55d291f9cc236c0cf9be30d",
