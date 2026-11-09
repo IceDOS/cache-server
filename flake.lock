@@ -25,11 +25,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794159088,
-        "narHash": "sha256-CD+/i6hwtMCfpn/Rk9Puvs/Ir7ErelsIU4uD3AWHXfI=",
+        "lastModified": 1794230318,
+        "narHash": "sha256-xA4qbX7YEMnE0X7V0VmW81tgchxhl2ak3wpT6AgN58E=",
         "owner": "IceDOS",
         "repo": "core",
-        "rev": "30fd19c12d3b2309f4b43dd83161688c5eaacf34",
+        "rev": "8faf5c1c3f1930a7644bb54c5c28be70057ef33b",
         "type": "github"
       },
       "original": {
