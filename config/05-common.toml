@@ -15,6 +15,7 @@ fetchDependencies = false
 modules = [
   "prefixer",
   "sekirofpsunlock",
+  "sunshine-headless-gamescope",
 ]
 
 [[icedos.repositories]]
