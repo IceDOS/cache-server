@@ -1,0 +1,66 @@
+name: Report Module Failure
+
+# Module repos dispatch this when an update job fails. The App token has no issues
+# permission, so the report is posted here with cache-server's own token.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-repo:
+        description: "Module repo name, e.g. apps"
+        required: true
+      workflow:
+        description: "Failed workflow name"
+        required: true
+      module:
+        description: "Module the update job handled"
+        required: false
+        default: ''
+      run-id:
+        description: "Failed run id in the module repo"
+        required: true
+      ref:
+        description: "Ref the failed run used"
+        required: false
+        default: ''
+      event:
+        description: "Event that started the failed run"
+        required: false
+        default: ''
+
+permissions:
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          SOURCE_REPO: ${{ inputs.source-repo }}
+          WORKFLOW: ${{ inputs.workflow }}
+          MODULE: ${{ inputs.module }}
+          RUN_ID: ${{ inputs.run-id }}
+          REF: ${{ inputs.ref }}
+          EVENT: ${{ inputs.event }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const { SOURCE_REPO, WORKFLOW, MODULE, RUN_ID, REF, EVENT } = process.env;
+            if (!/^[A-Za-z0-9._-]+$/.test(SOURCE_REPO) || !/^\d+$/.test(RUN_ID)) {
+              core.setFailed(`bad input: source-repo=${SOURCE_REPO} run-id=${RUN_ID}`);
+              return;
+            }
+            const label = 'ci-failure';
+            const runUrl = `${context.serverUrl}/${owner}/${SOURCE_REPO}/actions/runs/${RUN_ID}`;
+            const what = `${SOURCE_REPO}: ${WORKFLOW}${MODULE ? ` (${MODULE})` : ''}`;
+            const body = `**${what}** failed on \`${REF}\` (${EVENT}) at ${new Date().toISOString()}\n${runUrl}\ncc @IceDBorn`;
+            const existing = (await github.rest.issues.listForRepo({ owner, repo, labels: label, state: 'open', per_page: 1 })).data;
+            if (existing.length) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: existing[0].number, body });
+              core.info(`reported on #${existing[0].number}`);
+            } else {
+              await github.rest.issues.create({ owner, repo, title: 'CI failure reports', body, labels: [label] });
+              core.info('created the rolling failure-report issue');
+            }
