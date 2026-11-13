@@ -22,27 +22,27 @@
   "icedos-github_icedos_apps": {
     "rev": "6703b3cb1af3ab0cbcabc24dc7d7542a6f35e48d",
     "repo": "",
-    "updated_at": 1794532185
+    "updated_at": 1794583445
   },
   "icedos-github_icedos_hardware": {
-    "rev": "083e0d263a624e186764146d47c669dda15ee7c4",
+    "rev": "6edc5d4cbbcb391074be0ea9b8fa3021b0b16906",
     "repo": "",
-    "updated_at": 1794525437
+    "updated_at": 1794583445
   },
   "icedos-github_icedos_kde": {
     "rev": "4c6276543bd1687eeb0bccbbcbdb5c7cdbf0bfba",
     "repo": "",
-    "updated_at": 1794454140
+    "updated_at": 1794583445
   },
   "icedos-github_icedos_providers": {
     "rev": "efbf9c9e0ab2b7eb56ddd0dcacfc31273229a55f",
     "repo": "",
-    "updated_at": 1794454140
+    "updated_at": 1794583445
   },
   "icedos-github_icedos_tweaks": {
     "rev": "452889470c2b1ae712244b32ab76efbeafba3b36",
     "repo": "",
-    "updated_at": 1794525740
+    "updated_at": 1794583445
   },
   "icedos": {
     "rev": "b8d127123e246dbf25ca30c49f69826837712032",
@@ -52,7 +52,7 @@
   "icedos-github_icedos_desktop": {
     "rev": "e4a7077ae9cedadbf55d291f9cc236c0cf9be30d",
     "repo": "",
-    "updated_at": 1794454140
+    "updated_at": 1794583445
   },
   "stylix": {
     "rev": "3e27b6c499e507df6e3bb8eca3614f5c95e28140",
@@ -63,8 +63,8 @@
     "repo": "github:nix-community/plasma-manager"
   },
   "icedos-github_icedos_gaming": {
-    "rev": "dd952358a769fefe90bff5ec156172c0a549ea2a",
+    "rev": "7c36e35d6f3fd93b1a4a23b90c22bc05b093e45e",
     "repo": "",
-    "updated_at": 1794525155
+    "updated_at": 1794583445
   }
 }
