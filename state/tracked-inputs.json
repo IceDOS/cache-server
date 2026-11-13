@@ -63,8 +63,8 @@
     "repo": "github:nix-community/plasma-manager"
   },
   "icedos-github_icedos_gaming": {
-    "rev": "7c36e35d6f3fd93b1a4a23b90c22bc05b093e45e",
+    "rev": "a19b0516101149ae49992e96f9f33cc9cfde8984",
     "repo": "",
-    "updated_at": 1794583445
+    "updated_at": 1794608909
   }
 }
