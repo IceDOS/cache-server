@@ -1,0 +1,159 @@
+{
+  "nodes": {
+    "cache-server": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794571743,
+        "narHash": "sha256-ej9kfMdvbv2uTpyGedD5Hxktsozfk4/d7oST28ivaVI=",
+        "owner": "icedos",
+        "repo": "cache-server",
+        "rev": "6752b97a54c9caf2df66d3c32a6bb92162c45f35",
+        "type": "github"
+      },
+      "original": {
+        "owner": "icedos",
+        "ref": "cache",
+        "repo": "cache-server",
+        "type": "github"
+      }
+    },
+    "home-manager": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794278858,
+        "narHash": "sha256-rkrJwLgLSHBnXfgoSKIDa+2LLGdTqynsV3GAxOTGhUU=",
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "rev": "82ce401aa350502897c3f2e85f384d61cd3b0b6d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "rev": "82ce401aa350502897c3f2e85f384d61cd3b0b6d",
+        "type": "github"
+      }
+    },
+    "icedos": {
+      "inputs": {
+        "cache-server": "cache-server",
+        "nixpkgs": [
+          "icedos-config",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794664620,
+        "narHash": "sha256-ZDiXAHbe0gYe8xu50rkCtZVUUMkNiSiR9K1bHvGCri8=",
+        "owner": "IceDOS",
+        "repo": "core",
+        "rev": "c5b1e01aa4cb8279b5abff8b7ad8a3a0c8bfde4f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "IceDOS",
+        "repo": "core",
+        "type": "github"
+      }
+    },
+    "icedos-config": {
+      "inputs": {
+        "icedos": "icedos",
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1,
+        "narHash": "sha256-OufhPnFVgyAvEnj4qpOfFK+JdYq8JeAyDSq7ddowOXQ=",
+        "path": "/nix/store/f0cm784lns6asqay18dr2xfmcykqwy0f-icedos-config",
+        "type": "path"
+      },
+      "original": {
+        "path": "/nix/store/f0cm784lns6asqay18dr2xfmcykqwy0f-icedos-config",
+        "type": "path"
+      }
+    },
+    "icedos-github_icedos_apps": {
+      "locked": {
+        "lastModified": 1794665439,
+        "narHash": "sha256-vTa2Jc3k/6Wb1rc1yOUhgwsuMdK0v6hIjHP0vJro2Jo=",
+        "owner": "icedos",
+        "repo": "apps",
+        "rev": "49e589919db71144433598069e709b57417fdabf",
+        "type": "github"
+      },
+      "original": {
+        "owner": "icedos",
+        "repo": "apps",
+        "rev": "49e589919db71144433598069e709b57417fdabf",
+        "type": "github"
+      }
+    },
+    "icedos-github_icedos_hardware": {
+      "locked": {
+        "lastModified": 1794681123,
+        "narHash": "sha256-tjPXKZvVinuzqyIooYGjgPviRhUu+s2C9xd3DCVpDgQ=",
+        "owner": "icedos",
+        "repo": "hardware",
+        "rev": "ef176b3e4e54c7921d0a9bfd2ae01da81969d36c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "icedos",
+        "repo": "hardware",
+        "rev": "ef176b3e4e54c7921d0a9bfd2ae01da81969d36c",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1794386569,
+        "narHash": "sha256-x9sADJvoVG0L6RejZB+/BB4YiGZFBZrfTlhF4uBq1tQ=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "d4f25a3e562008648d45bcf2d70bcc7422cad84e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1794386569,
+        "narHash": "sha256-x9sADJvoVG0L6RejZB+/BB4YiGZFBZrfTlhF4uBq1tQ=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "d4f25a3e562008648d45bcf2d70bcc7422cad84e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "d4f25a3e562008648d45bcf2d70bcc7422cad84e",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "home-manager": "home-manager",
+        "icedos-config": "icedos-config",
+        "icedos-core": [
+          "icedos-config",
+          "icedos"
+        ],
+        "icedos-github_icedos_apps": "icedos-github_icedos_apps",
+        "icedos-github_icedos_hardware": "icedos-github_icedos_hardware",
+        "nixpkgs": "nixpkgs_2"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
