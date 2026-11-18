@@ -22,27 +22,27 @@
   "icedos-github_icedos_apps": {
     "rev": "6d3114e07f58b1da55fcb6721784847492568784",
     "repo": "",
-    "updated_at": 1794879493
+    "updated_at": 1795000188
   },
   "icedos-github_icedos_hardware": {
-    "rev": "48a1b4c6b9047c3493577c9d9edcc22827973e0c",
+    "rev": "90ddffd1579be127a6d5575ce1c8cf4b9398442e",
     "repo": "",
-    "updated_at": 1794940648
+    "updated_at": 1795000188
   },
   "icedos-github_icedos_kde": {
     "rev": "ffe5ef38c9a02f69342e5db14d96bc930a9e8dff",
     "repo": "",
-    "updated_at": 1794814501
+    "updated_at": 1795000188
   },
   "icedos-github_icedos_providers": {
     "rev": "efbf9c9e0ab2b7eb56ddd0dcacfc31273229a55f",
     "repo": "",
-    "updated_at": 1794757144
+    "updated_at": 1795000188
   },
   "icedos-github_icedos_tweaks": {
     "rev": "48a8a2e6b08d490b9d110b92f15521a431f658a6",
     "repo": "",
-    "updated_at": 1794788325
+    "updated_at": 1795000188
   },
   "icedos": {
     "rev": "f3e61b17247c536a0170e563bca75003203ad390",
@@ -52,7 +52,7 @@
   "icedos-github_icedos_desktop": {
     "rev": "e4a7077ae9cedadbf55d291f9cc236c0cf9be30d",
     "repo": "",
-    "updated_at": 1794757144
+    "updated_at": 1795000188
   },
   "stylix": {
     "rev": "3e27b6c499e507df6e3bb8eca3614f5c95e28140",
@@ -65,6 +65,6 @@
   "icedos-github_icedos_gaming": {
     "rev": "37e8c9f71e4c55fa94eee5cae470237788bcdc64",
     "repo": "",
-    "updated_at": 1794940342
+    "updated_at": 1795000188
   }
 }
