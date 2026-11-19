@@ -1,8 +1,8 @@
 {
   "nix-cachyos-kernel": {
-    "rev": "c157f8ddd2c830e8dd5ef6cf11a288668fb96189",
+    "rev": "10e8df08ad828225575f448e6b49ae092132d9a8",
     "repo": "",
-    "updated_at": 1795003836
+    "updated_at": 1795071924
   },
   "ambiled": "8a9a9042f77129ea5aded8a98f0804a673332c1b",
   "prefixer": {
