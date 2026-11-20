@@ -3,11 +3,11 @@
     "cache-server": {
       "flake": false,
       "locked": {
-        "lastModified": 1794940663,
-        "narHash": "sha256-4aB4sklVG5hr3eMUcQrq1CY4VIxLY7ZwSdsmDtl63w8=",
+        "lastModified": 1795178260,
+        "narHash": "sha256-zz7x7BjQbMvEN5xOv8pClaxykWcwfp4rlIig+d+jRxE=",
         "owner": "icedos",
         "repo": "cache-server",
-        "rev": "58338a15aab8a7370ae1320a1d732250d7ffb8b3",
+        "rev": "102e38061d204508f1aa6efec5bad993fa4a902f",
         "type": "github"
       },
       "original": {
@@ -40,11 +40,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1794890597,
-        "narHash": "sha256-lME2lHoDHAaSHP3/okgiVoJ0icVEvsQH8LeU3We7tcc=",
+        "lastModified": 1795085501,
+        "narHash": "sha256-S5keGWzaKpuXo9MNoIC2FfTIuTyTnx8P4NhYJMEsTLI=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "04906337b6d53e8bb0eaf0470ae9f070a4d4eb55",
+        "rev": "0bb8272318b4ca41bf0edc6224df3e3e3046b70d",
         "type": "github"
       },
       "original": {
