@@ -1,4 +1,11 @@
 [[icedos.repositories]]
+url = "github:icedos/hardware"
+fetchDependencies = false
+modules = [
+  "kernel",
+]
+
+[[icedos.repositories]]
 url = "github:icedos/kde"
 modules = [
   "dynamic-workspaces",
@@ -8,6 +15,9 @@ modules = [
   "plasmazones",
   "window-borders",
 ]
+
+[icedos.hardware.kernel]
+variant = "latest"
 
 [icedos.system]
 version = "26.05"

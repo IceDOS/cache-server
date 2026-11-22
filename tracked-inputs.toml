@@ -30,7 +30,7 @@ min-interval = "24h"
 
 [[trackedInputs]]
 name = "jovian"
-configs = ["05-common.toml"]
+configs = ["05-common.toml", "40-kde.toml"]
 
 [[trackedInputs]]
 name = "icedos-github_icedos_apps"
@@ -42,7 +42,13 @@ configs = ["05-common.toml"]
 
 [[trackedInputs]]
 name = "icedos-github_icedos_hardware"
-configs = ["00-base.toml", "10-cuda.toml", "20-rocm.toml", "50-cachyos-kernel-v3.toml"]
+configs = [
+  "00-base.toml",
+  "10-cuda.toml",
+  "20-rocm.toml",
+  "40-kde.toml",
+  "50-cachyos-kernel-v3.toml",
+]
 
 [[trackedInputs]]
 name = "icedos-github_icedos_kde"
@@ -50,7 +56,7 @@ configs = ["40-kde.toml"]
 
 [[trackedInputs]]
 name = "icedos-github_icedos_providers"
-configs = ["05-common.toml"]
+configs = ["05-common.toml", "40-kde.toml"]
 
 [[trackedInputs]]
 name = "icedos-github_icedos_tweaks"
