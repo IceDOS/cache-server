@@ -467,7 +467,12 @@ jobs:
           open('build-pin-files.txt', 'w').write(''.join(f'{p}\n' for p in pins))
           print('pinning:', pins)
           PYEOF
-          [ -s build-pin-files.txt ] || { echo "source repo not referenced by any config" >&2; exit 1; }
+          # No build.toml owns the change and no config pulls it in: nothing to build.
+          if [ ! -s build-pin-files.txt ]; then
+            echo 'no config or build.toml covers the changed files; nothing to build'
+            echo "noop=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
           while read -r f; do
             sed -i "s|$match|url = \"github:icedos/${{ inputs.source-repo }}/${SOURCE_HEAD:-${{ inputs.source-head }}}\"|" "$f"
           done < build-pin-files.txt
